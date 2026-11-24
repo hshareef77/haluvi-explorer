@@ -33,7 +33,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || '8E80AB36333CAFECA4908BD7A4CCF682F8D9DCEC2758D72C2B2E37826421745E' }}
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -67,7 +67,7 @@ jobs:
         run: gradle --no-daemon -PappBuildNumber="$BUILD_NUMBER" :app:testDebugUnitTest :app:assembleRelease
       - name: Verify APK signature and prepare release file
         env:
-          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || '8E80AB36333CAFECA4908BD7A4CCF682F8D9DCEC2758D72C2B2E37826421745E' }}
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
         shell: bash
         run: |
           set -euo pipefail
