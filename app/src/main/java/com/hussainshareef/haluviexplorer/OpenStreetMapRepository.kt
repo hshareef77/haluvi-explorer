@@ -45,7 +45,7 @@ class OpenStreetMapRepository {
         } catch (t: Throwable) { main.post { callback(Result.failure(t)) } }
     }
 
-    fun download(area: IslandArea, callback: (Result<MapData>) -> Unit) = executor.execute {
+    fun download(area: IslandArea, onProgress: (String) -> Unit = {}, callback: (Result<MapData>) -> Unit) = executor.execute {
         try {
             val box = "${area.south},${area.west},${area.north},${area.east}"
             val query = """
@@ -66,12 +66,16 @@ class OpenStreetMapRepository {
             var failure: Throwable? = null
             for (endpoint in listOf("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")) {
                 try {
+                    main.post { onProgress("Downloading road and place data for ${area.shortName}. Waiting for the map service response.") }
                     response = postForm(endpoint, "data=" + enc(query))
                     break
                 } catch (t: Throwable) { failure = t }
             }
-            val data = response?.let { MapData.fromOverpass(area.shortName, it) } ?: throw (failure ?: IllegalStateException("Map download failed"))
+            if (response == null) throw (failure ?: IllegalStateException("Map download failed"))
+            main.post { onProgress("Map data received for ${area.shortName}. Processing road sections and mapped places.") }
+            val data = MapData.fromOverpass(area.shortName, response)
             if (data.roads.isEmpty()) throw IllegalStateException("The map source returned no road geometry for ${area.shortName}.")
+            main.post { onProgress("Map data processed. Saving ${data.roads.size} road sections and ${data.places.size} places offline.") }
             main.post { callback(Result.success(data)) }
         } catch (t: Throwable) { main.post { callback(Result.failure(t)) } }
     }

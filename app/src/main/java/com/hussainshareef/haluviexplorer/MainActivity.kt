@@ -14,6 +14,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.Switch
@@ -151,9 +152,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         page("Download and Manage Maps", "Back to Main Menu", ::showHome) {
             addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
             addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
-            addButton("Download an Island Map") { searchIsland() }
+            addButton("Choose Atoll and Island") { chooseAtoll() }
+            addButton("Search Island by Name") { searchIsland() }
             addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
-            addText("Import adds compatible OpenStreetMap and user-saved roads and places. Google-sourced places are skipped because they cannot be reused as offline map data.", 15f)
+            addText("Backup import keeps compatible OpenStreetMap roads, user roads and places. Google Places entries remain in your original backup, but are not copied into this offline OpenStreetMap map because Google restricts reuse of its place content with non-Google maps.", 15f)
             val files = store.all()
             if (files.isEmpty()) addText("No island maps downloaded yet.")
             files.forEach { file ->
@@ -214,7 +216,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun showMapOverview() {
         val map = loadedMap ?: return showMapManager()
         page("${map.islandName} Map Overview", "Back to Map Management", ::showMapManager) {
-            addText("Offline map overview for ${map.islandName}.")
+            addText("${map.islandName} map is saved on this phone and available offline.")
             addText("${map.roads.size} mapped roads, ${map.places.size} mapped places, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
             addText("This map comes from OpenStreetMap. Coverage and positional accuracy depend on available community mapping.")
             if (!map.connectivityVerified) addText("Road connections in this imported backup are inferred from identical coordinate points because the backup omits OpenStreetMap node IDs. Treat those junctions as estimates.")
@@ -231,6 +233,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             column.addView(results)
             val status = addStatus("Ready to search.")
+            val downloadProgress = ProgressBar(this@MainActivity).apply {
+                isIndeterminate = true
+                visibility = View.GONE
+                contentDescription = "Map download in progress"
+            }
+            column.addView(downloadProgress, LinearLayout.LayoutParams(-1, dp(8)))
             addButton("Search Island") {
                 val name = query.text.toString().trim()
                 if (name.isBlank()) { status.text = "Enter an island name."; return@addButton }
@@ -242,7 +250,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         areas.forEach { area ->
                             val button = Button(this@MainActivity).apply {
                                 text = area.displayName; contentDescription = "Download map for ${area.displayName}"; isAllCaps = false; minHeight = dp(58)
-                                setOnClickListener { downloadArea(area, status) }
+                                setOnClickListener { downloadArea(area, status, downloadProgress) }
                             }
                             results.addView(button, LinearLayout.LayoutParams(-1, -2))
                         }
@@ -252,39 +260,135 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun downloadArea(area: IslandArea, status: TextView) {
-        status.text = "Downloading road and place data for ${area.shortName}. This may take a few minutes."
-        osm.download(area) { result ->
-            result.onSuccess { map ->
-                val named = map.copy(islandName = area.displayName)
-                store.save(named)
-                Toast.makeText(this, "Map saved for ${area.shortName}.", Toast.LENGTH_LONG).show()
-                loadMap(store.all().firstOrNull { it.nameWithoutExtension == named.saveName() } ?: store.all().last())
-                showMapOverview()
-            }.onFailure { status.text = "Download failed: ${it.message ?: "network error"}. You can retry when the connection is available." }
+    private fun chooseAtoll() {
+        val atolls = runCatching { IslandCatalog.load(this) }.getOrElse {
+            Toast.makeText(this, "The Maldives island list could not be loaded.", Toast.LENGTH_LONG).show()
+            return
         }
-    }
-
-    private fun chooseMapForExploration() {
-        val files = store.all()
-        if (files.isEmpty()) { showMapManager(); return }
-        page("Choose an Island", "Back to Main Menu", ::showHome) {
-            addText("Select a downloaded island. Use Download and Manage Maps to add another island.")
-            files.forEach { file ->
-                val map = runCatching { store.load(file) }.getOrNull() ?: return@forEach
-                addButton("${map.islandName}. ${map.roads.size} roads") { loadMap(file); chooseRoad() }
+        page("Choose an Atoll", "Back to Map Management", ::showMapManager) {
+            addText("Choose an atoll, then choose an island from that atoll.")
+            atolls.forEach { atoll ->
+                addButton("${atoll.fullname} atoll. ${atoll.islands.size} islands") { chooseIsland(atoll) }
             }
         }
     }
 
-    private fun chooseMapForPlaces() {
-        val files = store.all()
-        if (files.isEmpty()) { showMapManager(); return }
-        page("Choose an Island", "Back to Main Menu", ::showHome) {
-            addText("Choose which downloaded island to search.")
-            files.forEach { file -> addButton(store.load(file).islandName) { loadMap(file); showPlaceList() } }
+    private fun chooseIsland(atoll: AtollEntry) {
+        page("Choose an Island in ${atoll.fullname}", "Back to Atolls", ::chooseAtoll) {
+            addText("Search within ${atoll.fullname} or choose an island.")
+            val search = addEdit("Search islands in ${atoll.fullname}")
+            val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            column.addView(results)
+            fun populate() {
+                results.removeAllViews()
+                val matches = atoll.islands.filter { it.name.contains(search.text.toString(), true) }
+                matches.forEach { island ->
+                    val label = "${island.name}, ${atoll.fullname}"
+                    val button = Button(this@MainActivity).apply {
+                        text = label; contentDescription = label; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener { searchIsland("${island.name}, ${atoll.fullname}") }
+                    }
+                    results.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+                }
+                statusView?.text = "${matches.size} islands in ${atoll.fullname}."
+            }
+            search.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+            addStatus("${atoll.islands.size} islands in ${atoll.fullname}.")
+            populate()
         }
     }
+
+    private fun downloadArea(area: IslandArea, status: TextView, progress: ProgressBar) {
+        progress.visibility = View.VISIBLE
+        status.text = "Connecting to the map service for ${area.shortName}. Download is starting."
+        announce(status.text.toString(), status)
+        osm.download(area, onProgress = { message ->
+            status.text = message
+            if (message.contains("processing", true)) announce(message, status)
+        }) { result ->
+            progress.visibility = View.GONE
+            result.onSuccess { map ->
+                val named = map.copy(islandName = area.displayName)
+                store.save(named)
+                loadMap(store.all().firstOrNull { it.nameWithoutExtension == named.saveName() } ?: store.all().last())
+                announce("Download complete. The ${area.shortName} map is saved on this phone for offline use. ${named.roads.size} road sections and ${named.places.size} places saved.", status)
+                showMapOverview()
+            }.onFailure {
+                status.text = "Download failed: ${it.message ?: "network error"}. No new map was saved. You can retry when the connection is available."
+                announce(status.text.toString(), status)
+            }
+        }
+    }
+
+    private fun chooseMapForExploration() {
+        chooseAtollForSavedMaps(forPlaces = false)
+    }
+
+    private fun chooseMapForPlaces() {
+        chooseAtollForSavedMaps(forPlaces = true)
+    }
+
+    private fun chooseAtollForSavedMaps(forPlaces: Boolean) {
+        val atolls = runCatching { IslandCatalog.load(this) }.getOrElse {
+            showMapManager()
+            return
+        }
+        page("Choose an Atoll", "Back to Main Menu", ::showHome) {
+            addText("Choose an atoll, then an island. Downloaded maps are identified in the island list.")
+            atolls.forEach { atoll -> addButton("${atoll.fullname} atoll") { chooseSavedIsland(atoll, forPlaces) } }
+        }
+    }
+
+    private fun chooseSavedIsland(atoll: AtollEntry, forPlaces: Boolean) {
+        page("Choose an Island in ${atoll.fullname}", "Back to Atolls", { chooseAtollForSavedMaps(forPlaces) }) {
+            val search = addEdit("Search islands in ${atoll.fullname}")
+            val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            column.addView(results)
+            fun findSavedFile(island: IslandEntry): File? {
+                val islandKey = "${atoll.code}:${island.name}"
+                return store.all().firstOrNull { file ->
+                    val map = runCatching { store.load(file) }.getOrNull() ?: return@firstOrNull false
+                    normalizedIsland(map.sourceIslandKey) == normalizedIsland(islandKey) ||
+                        normalizedIsland(map.islandName).endsWith(normalizedIsland(island.name)) ||
+                        file.nameWithoutExtension.equals(island.name.replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-'), true)
+                }
+            }
+            fun populate() {
+                results.removeAllViews()
+                val matches = atoll.islands.filter { it.name.contains(search.text.toString(), true) }
+                matches.forEach { island ->
+                    val file = findSavedFile(island)
+                    val label = "${island.name}${if (file == null) ". Map not downloaded" else ". Map downloaded"}"
+                    val button = Button(this@MainActivity).apply {
+                        text = label; contentDescription = "$label, ${atoll.fullname}"; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener {
+                            if (file == null) searchIsland("${island.name}, ${atoll.fullname}")
+                            else {
+                                loadMap(file)
+                                if (forPlaces) showPlaceList() else chooseRoad()
+                            }
+                        }
+                    }
+                    results.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+                }
+                statusView?.text = "${matches.size} islands in ${atoll.fullname}."
+            }
+            addStatus("${atoll.islands.size} islands in ${atoll.fullname}.")
+            search.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+            populate()
+        }
+    }
+
+    private fun normalizedIsland(value: String): String = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "").lowercase().filter { it.isLetterOrDigit() }
 
     private fun loadMap(file: File) {
         loadedMap = store.load(file); loadedFile = file
@@ -293,26 +397,41 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun chooseRoad(filterText: String = "") {
         val map = loadedMap ?: return showMapManager()
         page("Explore Roads in ${map.islandName}", "Back to Island List", ::chooseMapForExploration) {
-            addText("Search by road name. Choose a road to hear its length, endpoints, connections and mapped places.")
+            addText("Search by road name. Each named road appears once; its mapped sections are grouped together.")
             val search = addEdit("Search roads", filterText)
             val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             column.addView(results)
             fun populate() {
                 results.removeAllViews()
-                val matches = map.roads.filter { it.name.contains(search.text.toString(), true) }.take(80)
-                matches.forEach { road ->
-                    val b = Button(this@MainActivity).apply { text = "${road.name}, ${road.lengthMeters.roundToInt()} metres"; contentDescription = "Road ${road.name}, ${road.lengthMeters.roundToInt()} metres"; isAllCaps = false; minHeight = dp(58); setOnClickListener { showRoadOverview(road) } }
+                val matches = groupRoadsByName(map.roads, search.text.toString()).take(80)
+                matches.forEach { (name, sections) ->
+                    val total = sections.sumOf { it.lengthMeters }.roundToInt()
+                    val label = "$name, $total metres across ${sections.size} sections"
+                    val b = Button(this@MainActivity).apply { text = label; contentDescription = label; isAllCaps = false; minHeight = dp(58); setOnClickListener { showRoadSections(name, sections) } }
                     results.addView(b, LinearLayout.LayoutParams(-1, -2))
                 }
-                statusView?.text = if (matches.isEmpty()) "No matching roads." else "${matches.size} matching roads shown."
+                statusView?.text = if (matches.isEmpty()) "No matching roads." else "${matches.size} named roads shown. Their individual geometry sections stay available for accurate junction movement."
             }
             search.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
                 override fun afterTextChanged(s: Editable?) = Unit
             })
-            addStatus("${map.roads.size} roads are available offline.")
+            addStatus("${map.roads.map { it.name.trim().lowercase() }.distinct().size} named roads are available offline across ${map.roads.size} geometry sections.")
             populate()
+        }
+    }
+
+    private fun showRoadSections(name: String, sections: List<Road>) {
+        val ordered = sections.sortedBy { it.id }
+        if (ordered.size == 1) return showRoadOverview(ordered.single())
+        val map = loadedMap ?: return
+        page("$name Road Sections", "Back to Roads", { chooseRoad(name) }) {
+            addText("$name is stored as ${ordered.size} geometry sections to preserve junction movement. Choose a section to inspect or start walking it.")
+            ordered.forEachIndexed { index, road ->
+                val label = "Section ${index + 1}, ${road.lengthMeters.roundToInt()} metres. ${endpointDescription(road, map)}"
+                addButton(label) { showRoadOverview(road) }
+            }
         }
     }
 

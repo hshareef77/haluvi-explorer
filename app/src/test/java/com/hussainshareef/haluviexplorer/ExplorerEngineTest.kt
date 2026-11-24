@@ -53,6 +53,17 @@ class ExplorerEngineTest {
         assertEquals(setOf("Through Road", "Branch Road"), engine.connections().map { it.road.name }.toSet())
     }
 
+    @Test fun roadChooserGroupsShortGeometrySectionsUnderOneNamedRoad() {
+        val sectionA = Road("w1:part:0", "Haveree Hingun", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.00005)))
+        val sectionB = Road("w1:part:1", "Haveree Hingun", "residential", listOf(2, 3), listOf(GeoPoint(0.0, 0.00005), GeoPoint(0.0, 0.0001)))
+        val other = Road("w2", "Kanbaa Aisa Rani Hingun", "residential", listOf(4, 5), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.0002)))
+        val groups = groupRoadsByName(listOf(sectionA, sectionB, other))
+        assertEquals(2, groups.size)
+        val haveree = groups.single { it.first == "Haveree Hingun" }
+        assertEquals(2, haveree.second.size)
+        assertEquals(1, groupRoadsByName(listOf(sectionA, sectionB, other), "haveree").size)
+    }
+
     @Test fun movingBackwardKeepsFacingAndUsesActualRoadDirection() {
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), emptyList()))
         engine.start(eastRoad, eastRoad.lengthMeters / 2)

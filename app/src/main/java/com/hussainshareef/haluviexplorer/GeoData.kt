@@ -148,6 +148,13 @@ fun splitRoadsAtSharedNodes(roads: List<Road>): List<Road> {
     }
 }
 
+/** Keeps graph sections intact while presenting one searchable entry per named street. */
+fun groupRoadsByName(roads: List<Road>, filter: String = ""): List<Pair<String, List<Road>>> =
+    roads.groupBy { it.name.trim().ifBlank { "Unnamed road" } }
+        .filterKeys { it.contains(filter, ignoreCase = true) }
+        .toList()
+        .sortedBy { it.first.lowercase() }
+
 fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
     val radius = 6_371_000.0
     val lat1 = Math.toRadians(a.lat); val lat2 = Math.toRadians(b.lat)
