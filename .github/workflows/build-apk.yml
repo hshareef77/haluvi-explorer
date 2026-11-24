@@ -1,7 +1,5 @@
-name: Build Android APK
+name: Build Haluvi Explorer debug APK
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,9 +15,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
-      - run: gradle --no-daemon :app:assembleDebug
+      - run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: haluvi-explorer-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 1

@@ -2,11 +2,17 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
-android {
-    namespace = "mv.haluvi.explorer"
-    compileSdk = 35
-    defaultConfig { applicationId = "mv.haluvi.explorer"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "1.0" }
 
+android {
+    namespace = "com.hussainshareef.haluviexplorer"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "com.hussainshareef.haluviexplorer"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = providers.gradleProperty("appBuildNumber").orNull?.toIntOrNull() ?: 1
+        versionName = "0.1.0"
+    }
     val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
     if (!keyStorePath.isNullOrBlank()) {
         signingConfigs {
@@ -21,6 +27,13 @@ android {
             getByName("release") { signingConfig = signingConfigs.getByName("permanentRelease") }
         }
     }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
