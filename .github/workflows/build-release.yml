@@ -98,14 +98,7 @@ jobs:
           apk="Haluvi-Explorer-v${VERSION_NAME}-build-${BUILD_NUMBER}.apk"
           test -s "$apk"
           tag="v${VERSION_NAME}-build-${BUILD_NUMBER}"
-          notes=$(cat <<EOF
-Haluvi Explorer ${VERSION_NAME}, build ${BUILD_NUMBER}.
-
-Signed with the pinned permanent Haluvi Android key. Includes offline virtual road exploration using user-downloaded OpenStreetMap data.
-
-Automated Kotlin road geometry tests passed before publishing. This is an experimental accessibility release; map coverage and place positions depend on OpenStreetMap.
-EOF
-          )
+          notes=$(printf 'Haluvi Explorer %s, build %s.\n\nSigned with the pinned permanent Haluvi Android key. Includes offline virtual road exploration using user-downloaded OpenStreetMap data.\n\nAutomated Kotlin road geometry tests passed before publishing. This is an experimental accessibility release; map coverage and place positions depend on OpenStreetMap.' "$VERSION_NAME" "$BUILD_NUMBER")
           gh release create "$tag" "$apk" \
             --target "$GITHUB_SHA" \
             --title "Haluvi Explorer v${VERSION_NAME} (build ${BUILD_NUMBER})" \
