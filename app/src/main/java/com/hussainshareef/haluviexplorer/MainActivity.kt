@@ -49,6 +49,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var lastScreenBack: (() -> Unit)? = null
     private var lastBackLabel = "Back to Main Menu"
     private val importRequestCode = 7412
+    private var screenGeneration = 0
+    private var activeDownload: MapDownloadHandle? = null
+    private var activeDownloadDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +71,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
+        activeDownload?.cancel()
+        activeDownloadDialog?.dismiss()
         stopAutoWalk(null)
         tts?.stop(); tts?.shutdown(); tts = null
         super.onDestroy()
@@ -87,7 +92,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (prefs.contains("session_map")) addButton("Manage Saved Exploration") { manageSavedExploration() }
             val savedBookmarks = runCatching { JSONArray(prefs.getString("bookmarks", "[]")) }.getOrDefault(JSONArray())
             if (savedBookmarks.length() > 0) addButton("Saved Bookmarks") { showBookmarks() }
-            addButton("Explore Roads") { chooseMapForExploration() }
             addButton("Explore Places") { chooseMapForPlaces() }
             addButton("Learning and Challenges") { showLearning() }
             addButton("Download and Manage Maps") { showMapManager() }
@@ -98,6 +102,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun page(title: String, backLabel: String?, back: (() -> Unit)?, body: PageBuilder.() -> Unit) {
+        screenGeneration++
         lastScreenBack = back
         lastBackLabel = backLabel ?: "Back to Main Menu"
         val builder = PageBuilder(title)
@@ -150,28 +155,45 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun showMapManager() {
         page("Download and Manage Maps", "Back to Main Menu", ::showHome) {
+            val generation = screenGeneration
             addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
             addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
             addButton("Choose Atoll and Island") { chooseAtoll() }
             addButton("Search Island by Name") { searchIsland() }
             addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
             addText("Backup import keeps compatible OpenStreetMap roads, user roads and places. Google Places entries remain in your original backup, but are not copied into this offline OpenStreetMap map because Google restricts reuse of its place content with non-Google maps.", 15f)
-            val files = store.all()
-            if (files.isEmpty()) addText("No island maps downloaded yet.")
-            files.forEach { file ->
-                val map = runCatching { store.load(file) }.getOrNull() ?: return@forEach
-                addText("${map.islandName}. ${map.roads.size} roads, ${map.places.size} mapped places, ${file.length() / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(map.downloadedAt))}.")
-                addButton("Explore ${map.islandName}") { loadMap(file); chooseRoad() }
-                addButton("Explore places on ${map.islandName}") { loadMap(file); showPlaceList() }
+            addText("Reading saved map summaries…", live = true)
+            addButton("OpenStreetMap attribution") { showAttribution() }
+            Thread {
+                val summaries = store.summaries()
+                mainHandler.post { if (screenGeneration == generation) renderMapManager(summaries) }
+            }.start()
+        }
+    }
+
+    private fun renderMapManager(summaries: List<StoredMapSummary>) {
+        page("Download and Manage Maps", "Back to Main Menu", ::showHome) {
+            addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
+            addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
+            addButton("Choose Atoll and Island") { chooseAtoll() }
+            addButton("Search Island by Name") { searchIsland() }
+            addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
+            addText("Backup import keeps compatible OpenStreetMap roads, user roads and places. Google Places details remain in your original backup. They cannot be copied into an offline OpenStreetMap map.", 15f)
+            val roads = summaries.sumOf { it.roadCount }
+            val places = summaries.sumOf { it.placeCount }
+            addText("${summaries.size} islands have an offline map. $roads road sections and $places places saved.", 19f, live = true)
+            if (summaries.isEmpty()) addText("No island maps downloaded yet.")
+            summaries.forEach { summary ->
+                val file = summary.file; val map = summary.map
+                addText("${map.islandName}. ${map.roads.size} road sections, ${map.places.size} mapped places, ${file.length() / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(map.downloadedAt))}.")
+                addButton("Explore ${map.islandName}") { loadedMap = map; loadedFile = file; chooseRoad() }
+                addButton("Explore places on ${map.islandName}") { loadedMap = map; loadedFile = file; showPlaceList() }
                 addButton("Update ${map.islandName}") { searchIsland(map.islandName.substringBefore(",")) }
                 addButton("Delete map for ${map.islandName}") {
                     AlertDialog.Builder(this@MainActivity).setTitle("Delete island map?")
                         .setMessage("Delete the saved offline map for ${map.islandName} from this phone?")
-                        .setPositiveButton("Delete") { _, _ ->
-                            store.delete(file)
-                            if (prefs.getString("session_map", null) == file.name) prefs.edit().remove("session_map").apply()
-                            showMapManager()
-                        }.setNegativeButton("Cancel", null).show()
+                        .setPositiveButton("Delete") { _, _ -> Thread { store.delete(file); mainHandler.post { if (prefs.getString("session_map", null) == file.name) prefs.edit().remove("session_map").apply(); showMapManager() } }.start() }
+                        .setNegativeButton("Cancel", null).show()
                 }
             }
             addButton("OpenStreetMap attribution") { showAttribution() }
@@ -316,19 +338,59 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         progress.visibility = View.VISIBLE
         status.text = "Connecting to the map service for ${area.shortName}. Download is starting."
         announce(status.text.toString(), status)
-        osm.download(area, onProgress = { message ->
-            status.text = message
-            if (message.contains("processing", true)) announce(message, status)
+        val detail = TextView(this).apply { text = "Preparing map download…"; textSize = 18f; setPadding(dp(20), dp(18), dp(20), dp(8)); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true; max = 100; contentDescription = "Map download progress"; setPadding(dp(20), dp(8), dp(20), dp(16))
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(detail); addView(bar) }
+        val dialog = AlertDialog.Builder(this).setTitle("Downloading ${area.shortName} map")
+            .setView(content).setNegativeButton("Cancel", null).create()
+        activeDownloadDialog = dialog
+        dialog.setOnCancelListener { activeDownload?.cancel(); activeDownload = null; status.text = "Map download cancelled."; progress.visibility = View.GONE; announce(status.text.toString(), status) }
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener { activeDownload?.cancel(); dialog.dismiss() } }
+        dialog.show()
+        activeDownload = osm.download(area, onProgress = { update ->
+            detail.text = if (update.totalBytes > 0 && update.stage.startsWith("Downloading")) {
+                val percent = ((100.0 * update.bytesRead / update.totalBytes).toInt()).coerceIn(0, 100)
+                bar.isIndeterminate = false; bar.progress = percent
+                "${update.stage}. $percent percent, ${update.bytesRead / 1024} of ${update.totalBytes / 1024} kilobytes received."
+            } else {
+                bar.isIndeterminate = update.stage.startsWith("Connecting") || update.stage.startsWith("Processing")
+                update.stage + if (update.bytesRead > 0) ". ${update.bytesRead / 1024} kilobytes received." else ""
+            }
+            status.text = detail.text
         }) { result ->
+            activeDownload = null
             progress.visibility = View.GONE
             result.onSuccess { map ->
+                detail.text = "Saving downloaded roads and places on this phone…"
+                status.text = detail.text
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                dialog.setCancelable(false)
                 val named = map.copy(islandName = area.displayName)
-                store.save(named)
-                loadMap(store.all().firstOrNull { it.nameWithoutExtension == named.saveName() } ?: store.all().last())
-                announce("Download complete. The ${area.shortName} map is saved on this phone for offline use. ${named.roads.size} road sections and ${named.places.size} places saved.", status)
-                showMapOverview()
-            }.onFailure {
-                status.text = "Download failed: ${it.message ?: "network error"}. No new map was saved. You can retry when the connection is available."
+                Thread {
+                    val saved = runCatching { store.save(named) }
+                    mainHandler.post {
+                        if (saved.isSuccess) {
+                            loadedMap = named; loadedFile = saved.getOrThrow()
+                            dialog.dismiss(); activeDownloadDialog = null
+                            announce("Download complete. ${area.shortName} is saved offline with ${named.roads.size} road sections and ${named.places.size} places.", status)
+                            showMapOverview()
+                        } else {
+                            detail.text = "Could not save this map: ${saved.exceptionOrNull()?.message ?: "storage error"}. You can retry."
+                            status.text = detail.text; dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.text = "Close"
+                        }
+                    }
+                }.start()
+            }.onFailure { error ->
+                if (error.message?.contains("cancelled", true) == true) {
+                    status.text = "Map download cancelled. No new map was saved."
+                    dialog.dismiss(); activeDownloadDialog = null
+                } else {
+                    detail.text = "Download failed: ${error.message ?: "network error"}. No new map was saved. You can retry."
+                    status.text = detail.text; dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.text = "Close"
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setOnClickListener { dialog.dismiss(); activeDownloadDialog = null }
+                }
                 announce(status.text.toString(), status)
             }
         }
@@ -355,13 +417,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun chooseSavedIsland(atoll: AtollEntry, forPlaces: Boolean) {
         page("Choose an Island in ${atoll.fullname}", "Back to Atolls", { chooseAtollForSavedMaps(forPlaces) }) {
+            val generation = screenGeneration
             val search = addEdit("Search islands in ${atoll.fullname}")
             val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             column.addView(results)
-            fun findSavedFile(island: IslandEntry): File? {
+            val status = addStatus("Reading downloaded island maps…")
+            var summaries: List<StoredMapSummary>? = null
+            fun findSavedMap(island: IslandEntry): StoredMapSummary? {
                 val islandKey = "${atoll.code}:${island.name}"
-                return store.all().firstOrNull { file ->
-                    val map = runCatching { store.load(file) }.getOrNull() ?: return@firstOrNull false
+                return summaries.orEmpty().firstOrNull { summary ->
+                    val file = summary.file; val map = summary.map
                     normalizedIsland(map.sourceIslandKey) == normalizedIsland(islandKey) ||
                         normalizedIsland(map.islandName).let { it.startsWith(normalizedIsland(island.name)) || it.endsWith(normalizedIsland(island.name)) } ||
                         file.nameWithoutExtension.equals(island.name.replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-'), true)
@@ -370,30 +435,34 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             fun populate() {
                 results.removeAllViews()
                 val matches = atoll.islands.filter { it.name.contains(search.text.toString(), true) }
+                if (summaries == null) { status.text = "Reading downloaded island maps…"; return }
                 matches.forEach { island ->
-                    val file = findSavedFile(island)
-                    val label = "${island.name}${if (file == null) ". Map not downloaded" else ". Map downloaded"}"
+                    val saved = findSavedMap(island)
+                    val label = "${island.name}${if (saved == null) ". Map not downloaded" else ". Map downloaded, ${saved.roadCount} road sections, ${saved.placeCount} places"}"
                     val button = Button(this@MainActivity).apply {
                         text = label; contentDescription = "$label, ${atoll.fullname}"; isAllCaps = false; minHeight = dp(58)
                         setOnClickListener {
-                            if (file == null) searchIsland("${island.name}, ${atoll.fullname}")
+                            if (saved == null) searchIsland("${island.name}, ${atoll.fullname}")
                             else {
-                                loadMap(file)
+                                loadedMap = saved.map; loadedFile = saved.file
                                 if (forPlaces) showPlaceList() else chooseRoad()
                             }
                         }
                     }
                     results.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
                 }
-                statusView?.text = "${matches.size} islands in ${atoll.fullname}."
+                status.text = "${matches.size} islands in ${atoll.fullname}."
             }
-            addStatus("${atoll.islands.size} islands in ${atoll.fullname}.")
             search.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
                 override fun afterTextChanged(s: Editable?) = Unit
             })
             populate()
+            Thread {
+                val loaded = store.summaries()
+                mainHandler.post { if (screenGeneration == generation) { summaries = loaded; populate() } }
+            }.start()
         }
     }
 
@@ -795,15 +864,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun resumeSession() {
         val filename = prefs.getString("session_map", null) ?: return showHome()
         val file = store.all().firstOrNull { it.name == filename } ?: return showHome()
-        loadMap(file)
-        val map = loadedMap ?: return showHome()
-        val road = map.roads.firstOrNull { it.id == prefs.getString("session_road", null) } ?: return chooseRoad()
-        engine = ExplorerEngine(map).apply {
-            restore(road, prefs.getFloat("session_progress", 0f).toDouble(), prefs.getInt("session_sign", 1),
-                prefs.getFloat("session_facing", 0f).toDouble(), prefs.getFloat("session_distance", 0f).toDouble(),
-                prefs.getInt("session_junctions", 0))
+        page("Resume Exploration", "Back to Main Menu", ::showHome) { addText("Restoring your saved island and walking position…", live = true) }
+        val generation = screenGeneration
+        Thread {
+            val loaded = runCatching { store.load(file) }
+            mainHandler.post {
+                if (screenGeneration != generation) return@post
+                loaded.onFailure { Toast.makeText(this, "Saved map could not be opened. ${it.message ?: ""}", Toast.LENGTH_LONG).show(); showHome() }
+                    .onSuccess { map ->
+                        loadedMap = map; loadedFile = file
+                        val road = map.roads.firstOrNull { it.id == prefs.getString("session_road", null) }
+                        if (road == null) { chooseRoad(); return@onSuccess }
+                        engine = ExplorerEngine(map).apply {
+                            restore(road, prefs.getFloat("session_progress", 0f).toDouble(), prefs.getInt("session_sign", 1),
+                                prefs.getFloat("session_facing", 0f).toDouble(), prefs.getFloat("session_distance", 0f).toDouble(),
+                                prefs.getInt("session_junctions", 0))
+                        }
+                        startPosition = engine?.position(); showExplore()
+                    }
+            }
         }
-        startPosition = engine?.position(); showExplore()
+        .start()
     }
 
     private fun showHistory() {
@@ -850,17 +931,26 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val file = store.all().firstOrNull { it.name == fileName }
                     if (file == null) { Toast.makeText(this@MainActivity, "The map for this bookmark is no longer downloaded.", Toast.LENGTH_LONG).show() }
                     else {
-                        loadMap(file)
-                        val map = loadedMap
-                        val e = map?.let { ExplorerEngine(it) }
-                        val point = when {
-                            parts[0] == "position" -> parts.getOrNull(2)?.split(",")?.takeIf { it.size == 2 }?.let { xy -> GeoPoint(xy[0].toDoubleOrNull() ?: 0.0, xy[1].toDoubleOrNull() ?: 0.0) }
-                            parts[0] == "place" -> map?.places?.firstOrNull { it.id == parts.getOrNull(2) }?.point
-                            else -> null
-                        }
-                        if (point != null && e != null && e.startNear(point) != null) {
-                            engine = e; startPosition = e.position(); destination = null; returnJourney = false; persistSession(); showExplore()
-                        } else Toast.makeText(this@MainActivity, "Could not find a road near this bookmark.", Toast.LENGTH_LONG).show()
+                        page("Opening Bookmark", "Back to Saved Bookmarks", ::showBookmarks) { addText("Loading the saved island map…", live = true) }
+                        val generation = screenGeneration
+                        Thread {
+                            val loaded = runCatching { store.load(file) }
+                            mainHandler.post {
+                                if (screenGeneration != generation) return@post
+                                loaded.onSuccess { map ->
+                                    loadedMap = map; loadedFile = file
+                                    val e = ExplorerEngine(map)
+                                    val point = when {
+                                        parts[0] == "position" -> parts.getOrNull(2)?.split(",")?.takeIf { it.size == 2 }?.let { xy -> GeoPoint(xy[0].toDoubleOrNull() ?: 0.0, xy[1].toDoubleOrNull() ?: 0.0) }
+                                        parts[0] == "place" -> map.places.firstOrNull { it.id == parts.getOrNull(2) }?.point
+                                        else -> null
+                                    }
+                                    if (point != null && e.startNear(point) != null) {
+                                        engine = e; startPosition = e.position(); destination = null; returnJourney = false; persistSession(); showExplore()
+                                    } else { Toast.makeText(this@MainActivity, "Could not find a road near this bookmark.", Toast.LENGTH_LONG).show(); showBookmarks() }
+                                }.onFailure { Toast.makeText(this@MainActivity, "Map could not be opened.", Toast.LENGTH_LONG).show(); showBookmarks() }
+                            }
+                        }.start()
                     }
                 }
                 addButton("Rename ${item.optString("label")}") {
@@ -1008,31 +1098,3 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Virtual movement is based on downloaded road geometry. It is not live navigation and does not provide real-world pedestrian safety guidance.")
             addText("Place coverage, road names and connection quality depend on OpenStreetMap data and can be incomplete or outdated.")
             addText("Version 0.1.0, build 1")
-            addButton("OpenStreetMap attribution and licence") { showAttribution() }
-            addText("Developer: Haluvi Services")
-        }
-    }
-
-    private fun showAttribution() {
-        page("Map Data and Licence", "Back to Main Menu", ::showHome) {
-            addText("Map and place data: © OpenStreetMap contributors. OpenStreetMap data is available under the Open Database License (ODbL).")
-            addText("Source and licence: openstreetmap.org/copyright")
-            addText("Data is requested only when you search for and download an island. Downloaded map data is stored locally for offline use.")
-            addText("Place coordinates do not guarantee building entrances. Road connections are inferred from shared road-node identifiers in the downloaded data.")
-        }
-    }
-
-    private fun stepMetres(): Double = prefs.getInt("step_distance", 5).toDouble().coerceIn(1.0, 20.0)
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
-
-    private fun pointAt(road: Road, metres: Double): GeoPoint {
-        var rest = metres.coerceIn(0.0, road.lengthMeters)
-        for (i in 0 until road.points.lastIndex) {
-            val a = road.points[i]; val b = road.points[i + 1]; val length = distanceMeters(a, b)
-            if (length > 0 && rest <= length) { val f = rest / length; return GeoPoint(a.lat + (b.lat - a.lat) * f, a.lon + (b.lon - a.lon) * f) }
-            rest -= length
-        }
-        return road.points.last()
-    }
-}
-

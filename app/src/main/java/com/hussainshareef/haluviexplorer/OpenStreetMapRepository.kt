@@ -4,12 +4,21 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONArray
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+
+data class MapDownloadProgress(val stage: String, val bytesRead: Long = 0L, val totalBytes: Long = -1L)
+
+class MapDownloadHandle {
+    @Volatile internal var cancelled = false
+    @Volatile internal var connection: HttpURLConnection? = null
+    fun cancel() { cancelled = true; connection?.disconnect() }
+}
 
 data class IslandArea(
     val displayName: String,
@@ -80,8 +89,11 @@ class OpenStreetMapRepository {
         } catch (t: Throwable) { main.post { callback(Result.failure(t)) } }
     }
 
-    fun download(area: IslandArea, onProgress: (String) -> Unit = {}, callback: (Result<MapData>) -> Unit) = executor.execute {
+    fun download(area: IslandArea, onProgress: (MapDownloadProgress) -> Unit = {}, callback: (Result<MapData>) -> Unit): MapDownloadHandle {
+        val handle = MapDownloadHandle()
+        executor.execute {
         try {
+            check(!handle.cancelled) { "Download cancelled." }
             val box = "${area.south},${area.west},${area.north},${area.east}"
             val query = """
                 [out:json][timeout:90];
@@ -101,27 +113,34 @@ class OpenStreetMapRepository {
             var failure: Throwable? = null
             for (endpoint in listOf("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")) {
                 try {
-                    main.post { onProgress("Downloading road and place data for ${area.shortName}. Waiting for the map service response.") }
-                    response = postForm(endpoint, "data=" + enc(query))
+                    main.post { onProgress(MapDownloadProgress("Connecting to map service for ${area.shortName}")) }
+                    response = postForm(endpoint, "data=" + enc(query), handle) { bytes, total ->
+                        main.post { onProgress(MapDownloadProgress("Downloading map data for ${area.shortName}", bytes, total)) }
+                    }
                     break
-                } catch (t: Throwable) { failure = t }
+                } catch (t: Throwable) { failure = t; if (handle.cancelled) throw t }
             }
             if (response == null) throw (failure ?: IllegalStateException("Map download failed"))
-            main.post { onProgress("Map data received for ${area.shortName}. Processing road sections and mapped places.") }
+            check(!handle.cancelled) { "Download cancelled." }
+            main.post { onProgress(MapDownloadProgress("Processing places and road geometry")) }
             val data = MapData.fromOverpass(area.shortName, response)
             if (data.roads.isEmpty()) throw IllegalStateException("The map source returned no road geometry for ${area.shortName}.")
-            main.post { onProgress("Map data processed. Saving ${data.roads.size} road sections and ${data.places.size} places offline.") }
+            check(!handle.cancelled) { "Download cancelled." }
+            main.post { onProgress(MapDownloadProgress("Map data processed: ${data.roads.size} road sections and ${data.places.size} places")) }
             main.post { callback(Result.success(data)) }
-        } catch (t: Throwable) { main.post { callback(Result.failure(t)) } }
+        } catch (t: Throwable) { main.post { callback(Result.failure(if (handle.cancelled) IllegalStateException("Download cancelled.") else t)) } }
+        }
+        return handle
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
 
     private fun get(url: String): String = request(url, null)
-    private fun postForm(url: String, form: String): String = request(url, form)
+    private fun postForm(url: String, form: String, handle: MapDownloadHandle, progress: (Long, Long) -> Unit): String = request(url, form, handle, progress)
 
-    private fun request(urlString: String, body: String?): String {
+    private fun request(urlString: String, body: String?, handle: MapDownloadHandle? = null, progress: ((Long, Long) -> Unit)? = null): String {
         val connection = URL(urlString).openConnection() as HttpURLConnection
+        handle?.connection = connection
         connection.connectTimeout = 25_000
         connection.readTimeout = 120_000
         connection.requestMethod = if (body == null) "GET" else "POST"
@@ -132,10 +151,27 @@ class OpenStreetMapRepository {
             connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
             connection.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
         }
+        if (handle?.cancelled == true) throw IllegalStateException("Download cancelled.")
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.use { input -> BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).readText() }.orEmpty()
+        val text = stream?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(16 * 1024)
+            var bytes = 0L
+            var lastReported = 0L
+            val total = connection.contentLengthLong
+            while (true) {
+                if (handle?.cancelled == true) throw IllegalStateException("Download cancelled.")
+                val count = input.read(buffer)
+                if (count < 0) break
+                output.write(buffer, 0, count); bytes += count
+                if (bytes - lastReported >= 256 * 1024 || (total > 0 && bytes == total)) { progress?.invoke(bytes, total); lastReported = bytes }
+            }
+            progress?.invoke(bytes, total)
+            String(output.toByteArray(), StandardCharsets.UTF_8)
+        }.orEmpty()
         connection.disconnect()
+        if (handle?.connection === connection) handle.connection = null
         if (code !in 200..299) throw IllegalStateException("Map service returned HTTP $code${if (text.isBlank()) "" else ": ${text.take(160)}"}")
         return text
     }
