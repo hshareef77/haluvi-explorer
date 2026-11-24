@@ -49,7 +49,7 @@ class ExplorerEngineTest {
         assertEquals(11L, throughParts[0].endNode)
         assertTrue(sections.any { it.name == "Branch Road" && it.startNode == 11L })
         val map = MapData("Test", 0, sections, emptyList())
-        val engine = ExplorerEngine(map).apply { start(throughParts[0], throughParts[0].lengthMeters) }
+        val engine = ExplorerEngine(map).apply { start(throughParts[0], 0.0); move(throughParts[0].lengthMeters) }
         assertEquals(setOf("Through Road", "Branch Road"), engine.connections().map { it.road.name }.toSet())
     }
 
@@ -102,7 +102,7 @@ class ExplorerEngineTest {
     }
 
     @Test fun importsNavigationSharedMapRoadsAndNonGooglePlacesOnly() {
-        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17505,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17506,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
+        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17515,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17516,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
         val batch = HaluviBackupImporter.parse(backup)
         assertEquals(1, batch.maps.size)
         val map = batch.maps.single()
