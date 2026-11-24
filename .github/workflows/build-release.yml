@@ -33,7 +33,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
+          EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || '01342D0E68C396BD1232F58CDC17E23CF330B26688420FEF0D822F8D4925D478' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -62,12 +62,20 @@ jobs:
             echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           } >> "$GITHUB_ENV"
           echo "Permanent signing certificate verified."
+      - name: Choose next release build number
+        id: release_number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.draft == false)] | length')
+          echo "build_number=$((count + 1))" >> "$GITHUB_OUTPUT"
       - name: Run road-network tests and build the signed APK
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
         run: gradle --no-daemon -PappBuildNumber="$BUILD_NUMBER" :app:testDebugUnitTest :app:assembleRelease
       - name: Verify APK signature and prepare release file
         env:
+          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
           EXPECTED_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 || 'A70DB10A0373C0AA21601714E4D4531EBA6FBE19E1A5623547D1C86D00C9E7AA' }}
         shell: bash
         run: |
@@ -85,7 +93,7 @@ jobs:
           fi
           version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
           test -n "$version"
-          build="$GITHUB_RUN_NUMBER"
+          build="$BUILD_NUMBER"
           cp "$apk" "Haluvi-Explorer-v${version}-build-${build}.apk"
           echo "VERSION_NAME=$version" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$build" >> "$GITHUB_ENV"
