@@ -50,6 +50,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/android-signing"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/android-signing/release.p12"
           actual=$(keytool -exportcert -keystore "$RUNNER_TEMP/android-signing/release.p12" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sha256sum | awk '{print toupper($1)}')
+          echo "Signing certificate SHA-256: $actual"
           if [[ "$actual" != "$expected" ]]; then
             echo "::error::Signing certificate does not match the permanent Haluvi signing identity. Release blocked."
             exit 1
