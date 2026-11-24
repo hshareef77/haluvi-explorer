@@ -2,6 +2,7 @@ package com.hussainshareef.haluviexplorer
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.json.JSONObject
 
 class ExplorerEngineTest {
     private val eastRoad = Road("east", "East Road", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)))
@@ -62,6 +63,13 @@ class ExplorerEngineTest {
         val haveree = groups.single { it.first == "Haveree Hingun" }
         assertEquals(2, haveree.second.size)
         assertEquals(1, groupRoadsByName(listOf(sectionA, sectionB, other), "haveree").size)
+    }
+
+    @Test fun islandSearchRejectsBuildingsAndAcceptsSettlements() {
+        assertTrue(isIslandOrSettlementResult(JSONObject("""{"category":"place","type":"city"}""")))
+        assertTrue(isIslandOrSettlementResult(JSONObject("""{"category":"place","type":"island"}""")))
+        assertFalse(isIslandOrSettlementResult(JSONObject("""{"category":"amenity","type":"courthouse"}""")))
+        assertFalse(isIslandOrSettlementResult(JSONObject("""{"category":"building","type":"yes"}""")))
     }
 
     @Test fun movingBackwardKeepsFacingAndUsesActualRoadDirection() {

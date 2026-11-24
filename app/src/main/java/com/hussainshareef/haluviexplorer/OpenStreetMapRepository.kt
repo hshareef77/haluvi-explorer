@@ -11,24 +11,41 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
-data class IslandArea(val displayName: String, val shortName: String, val south: Double, val west: Double, val north: Double, val east: Double)
+data class IslandArea(
+    val displayName: String,
+    val shortName: String,
+    val south: Double,
+    val west: Double,
+    val north: Double,
+    val east: Double,
+    val approximate: Boolean = false
+)
 
 class OpenStreetMapRepository {
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var lastGeocodeAt = 0L
 
-    fun searchIsland(query: String, callback: (Result<List<IslandArea>>) -> Unit) = executor.execute {
+    fun searchIsland(query: String, callback: (Result<List<IslandArea>>) -> Unit) = search(query, null, null, callback)
+
+    /** Uses the Navigation catalog point to constrain lookup to the chosen island's settlement. */
+    fun searchIsland(island: IslandEntry, atoll: AtollEntry, callback: (Result<List<IslandArea>>) -> Unit) =
+        search("${island.name}, ${atoll.fullname}", island, atoll, callback)
+
+    private fun search(query: String, selectedIsland: IslandEntry?, atoll: AtollEntry?, callback: (Result<List<IslandArea>>) -> Unit) = executor.execute {
         try {
             val waitMs = 1_100L - (System.currentTimeMillis() - lastGeocodeAt)
             if (waitMs > 0) Thread.sleep(waitMs)
-            val url = "https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=mv&limit=8&q=" + enc(query)
+            val center = selectedIsland
+            val viewbox = center?.let { "&viewbox=${it.longitude - 0.08},${it.latitude + 0.08},${it.longitude + 0.08},${it.latitude - 0.08}&bounded=1" }.orEmpty()
+            val url = "https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=mv&featureType=settlement&limit=8$viewbox&q=" + enc(query)
             val body = get(url)
             lastGeocodeAt = System.currentTimeMillis()
             val array = JSONArray(body)
             val results = buildList {
                 for (i in 0 until array.length()) {
                     val item = array.optJSONObject(i) ?: continue
+                    if (!isIslandOrSettlementResult(item)) continue
                     val box = item.optJSONArray("boundingbox") ?: continue
                     if (box.length() < 4) continue
                     val south = box.optString(0).toDoubleOrNull() ?: continue
@@ -36,12 +53,30 @@ class OpenStreetMapRepository {
                     val west = box.optString(2).toDoubleOrNull() ?: continue
                     val east = box.optString(3).toDoubleOrNull() ?: continue
                     if (north - south > 0.20 || east - west > 0.20) continue // Avoid unexpectedly large area downloads.
+                    if (center != null) {
+                        val lat = item.optDouble("lat", Double.NaN)
+                        val lon = item.optDouble("lon", Double.NaN)
+                        if (!lat.isFinite() || !lon.isFinite() || distanceMeters(GeoPoint(center.latitude, center.longitude), GeoPoint(lat, lon)) > 4_500.0) continue
+                    }
                     val name = item.optString("name").ifBlank { item.optString("display_name").substringBefore(",") }
-                    if (name.isNotBlank()) add(IslandArea(item.optString("display_name", name), name, south, west, north, east))
+                    if (name.isNotBlank()) {
+                        if (center != null && normalizedPlaceName(name) != normalizedPlaceName(center.name)) continue
+                        val label = if (center != null && atoll != null) "${center.name}, ${atoll.fullname} atoll" else item.optString("display_name", name)
+                        add(IslandArea(label, name, south, west, north, east))
+                    }
                 }
             }.distinctBy { it.shortName.lowercase() to listOf(it.south, it.west, it.north, it.east) }.take(5)
-            if (results.isEmpty()) throw IllegalStateException("No small Maldives island result found. Try a more specific island name.")
-            main.post { callback(Result.success(results)) }
+            val finalResults = if (results.isNotEmpty()) results else if (center != null && atoll != null) {
+                // Keep a selected catalog island usable even when OSM has no settlement polygon.
+                // This is explicitly labeled approximate rather than substituting a nearby building.
+                val latRadius = 0.03
+                val lonRadius = 0.03 / kotlin.math.cos(Math.toRadians(center.latitude)).coerceAtLeast(0.5)
+                listOf(IslandArea("${center.name}, ${atoll.fullname} atoll (approximate area around island centre)", center.name,
+                    center.latitude - latRadius, center.longitude - lonRadius,
+                    center.latitude + latRadius, center.longitude + lonRadius, approximate = true))
+            } else emptyList()
+            if (finalResults.isEmpty()) throw IllegalStateException("No Maldives island or settlement result found. Try selecting the island from its atoll list.")
+            main.post { callback(Result.success(finalResults)) }
         } catch (t: Throwable) { main.post { callback(Result.failure(t)) } }
     }
 
@@ -105,4 +140,13 @@ class OpenStreetMapRepository {
         return text
     }
 }
+
+internal fun isIslandOrSettlementResult(item: org.json.JSONObject): Boolean {
+    val category = item.optString("category", item.optString("class")).lowercase()
+    val type = item.optString("type").lowercase()
+    return category == "place" && type in setOf("island", "city", "town", "village", "hamlet", "locality", "isolated_dwelling", "suburb", "neighbourhood", "quarter", "borough")
+}
+
+private fun normalizedPlaceName(value: String): String = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+    .replace(Regex("\\p{M}+"), "").lowercase().filter { it.isLetterOrDigit() }
 

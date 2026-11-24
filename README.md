@@ -4,7 +4,7 @@ Haluvi Explorer is an experimental native Android application for blind and visu
 
 ## Version 0.1.0
 
-- Search for a Maldives island or locality, then download its OpenStreetMap road and place data.
+- Browse the Haluvi Navigation atoll and island catalog, or search by name, then download the selected island's OpenStreetMap road and place data. Atoll-based lookups are anchored to the catalog coordinates and reject buildings or shops as download areas.
 - Import Haluvi Navigation v2 full-backup or shared-map JSON from Map Management. Import adds compatible OSM and user-saved roads and places without replacing existing maps.
 - Continue exploring offline after a map has been saved on the phone.
 - Follow road geometry through curved roads; downloaded maps use shared OpenStreetMap nodes, while imported backup junctions are labeled as estimates.
