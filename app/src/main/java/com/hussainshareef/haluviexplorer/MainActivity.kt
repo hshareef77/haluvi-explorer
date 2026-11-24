@@ -1098,3 +1098,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Virtual movement is based on downloaded road geometry. It is not live navigation and does not provide real-world pedestrian safety guidance.")
             addText("Place coverage, road names and connection quality depend on OpenStreetMap data and can be incomplete or outdated.")
             addText("Version 0.1.0, build 1")
+            addButton("OpenStreetMap attribution and licence") { showAttribution() }
+            addText("Developer: Haluvi Services")
+        }
+    }
+
+    private fun showAttribution() {
+        page("Map Data and Licence", "Back to Main Menu", ::showHome) {
+            addText("Map and place data: © OpenStreetMap contributors. OpenStreetMap data is available under the Open Database License (ODbL).")
+            addText("Source and licence: openstreetmap.org/copyright")
+            addText("Data is requested only when you search for and download an island. Downloaded map data is stored locally for offline use.")
+            addText("Place coordinates do not guarantee building entrances. Road connections are inferred from shared road-node identifiers in the downloaded data.")
+        }
+    }
+
+    private fun stepMetres(): Double = prefs.getInt("step_distance", 5).toDouble().coerceIn(1.0, 20.0)
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
+
+    private fun pointAt(road: Road, metres: Double): GeoPoint {
+        var rest = metres.coerceIn(0.0, road.lengthMeters)
+        for (i in 0 until road.points.lastIndex) {
+            val a = road.points[i]; val b = road.points[i + 1]; val length = distanceMeters(a, b)
+            if (length > 0 && rest <= length) { val f = rest / length; return GeoPoint(a.lat + (b.lat - a.lat) * f, a.lon + (b.lon - a.lon) * f) }
+            rest -= length
+        }
+        return road.points.last()
+    }
+}
+
