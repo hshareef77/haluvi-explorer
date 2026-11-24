@@ -634,7 +634,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         return
                     }
                     autoWalking = false
-                    val junctionMessage = if (map.connectivityVerified) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
+                    val junctionMessage = if (loadedMap?.connectivityVerified == true) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
                     else "Automatic walking paused at a possible junction. ${connections.joinToString { it.road.name }} may connect here based on coordinates."
                     announce(if (connections.isEmpty()) "Automatic walking paused at the road endpoint. No road connection is mapped." else junctionMessage, status)
                     persistSession(); return
