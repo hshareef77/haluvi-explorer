@@ -24,6 +24,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
@@ -105,7 +106,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val heading = TextView(this@MainActivity).apply {
             text = title; textSize = 27f; setTextColor(Color.rgb(18, 52, 85));
             setPadding(0, dp(8), 0, dp(18)); isFocusable = true
-            if (android.os.Build.VERSION.SDK_INT >= 28) accessibilityHeading = true
+            if (android.os.Build.VERSION.SDK_INT >= 28) setAccessibilityHeading(true)
         }
         init { scroll.addView(column); column.addView(heading) }
         fun addText(text: String, size: Float = 17f, live: Boolean = false): TextView = TextView(this@MainActivity).apply {
@@ -161,6 +162,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
             }
             addButton("OpenStreetMap attribution") { showAttribution() }
+        }
+    }
+
+    private fun showMapOverview() {
+        val map = loadedMap ?: return showMapManager()
+        page("${map.islandName} Map Overview", "Back to Map Management", ::showMapManager) {
+            addText("Offline map overview for ${map.islandName}.")
+            addText("${map.roads.size} mapped roads, ${map.places.size} mapped places, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
+            addText("This map comes from OpenStreetMap. Coverage and positional accuracy depend on available community mapping.")
+            addButton("Explore Roads") { chooseRoad() }
+            addButton("Explore Places") { showPlaceList() }
+            addButton("Back to Main Menu") { showHome() }
         }
     }
 

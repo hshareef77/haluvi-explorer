@@ -46,6 +46,15 @@ class ExplorerEngineTest {
         assertTrue(engine.progressMeters < originalProgress)
     }
 
+    @Test fun startingFacingOppositeSetsForwardMovementAndBearingCorrectly() {
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), emptyList()))
+        engine.start(eastRoad, eastRoad.lengthMeters / 2, faceAlongRoad = false)
+        val initial = engine.progressMeters
+        assertEquals("west", engine.facing())
+        assertTrue(engine.move(10.0) > 9.9)
+        assertTrue(engine.progressMeters < initial)
+    }
+
     @Test fun leftAndRightDescriptionsReverseWhenFacingReverses() {
         val northSide = Place("north-side", "North Place", "shop", GeoPoint(0.00005, 0.0005), false)
         val map = MapData("Test", 0, listOf(eastRoad), listOf(northSide))

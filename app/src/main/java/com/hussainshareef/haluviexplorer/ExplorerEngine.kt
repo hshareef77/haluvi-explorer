@@ -24,8 +24,8 @@ class ExplorerEngine(private val map: MapData) {
         road = onRoad
         progressMeters = atProgress.coerceIn(0.0, onRoad.lengthMeters)
         travelSign = if (atProgress <= onRoad.lengthMeters / 2) 1 else -1
-        val pathBearing = bearingAt(onRoad, progressMeters, travelSign)
-        facingBearing = if (faceAlongRoad) pathBearing else (pathBearing + 180) % 360
+        if (!faceAlongRoad) travelSign = -travelSign
+        facingBearing = bearingAt(onRoad, progressMeters, travelSign)
     }
 
     fun nearestRoad(point: GeoPoint): Pair<Road, Double>? = map.roads.map { candidate ->
