@@ -2,11 +2,12 @@
 
 Haluvi Explorer is an experimental native Android application for blind and visually impaired people to explore the layout of mapped islands by virtual walking.
 
-## Version 0.1.0, build 1
+## Version 0.1.0
 
 - Search for a Maldives island or locality, then download its OpenStreetMap road and place data.
+- Import Haluvi Navigation v2 full-backup or shared-map JSON from Map Management. Import adds compatible OSM and user-saved roads and places without replacing existing maps.
 - Continue exploring offline after a map has been saved on the phone.
-- Follow road geometry through curved roads; movement stops at road endpoints and presents only connections that share an OpenStreetMap road node.
+- Follow road geometry through curved roads; downloaded maps use shared OpenStreetMap nodes, while imported backup junctions are labeled as estimates.
 - Inspect road endpoints, road length, nearby mapped places, and the approximate order and side of places along a road.
 - Move by configurable steps, places, junctions, or automatic walking. Automatic walking pauses at junctions by default.
 - Review surroundings, virtual position, recent movement history, saved sessions, and bookmarks.
@@ -17,13 +18,15 @@ Haluvi Explorer is an experimental native Android application for blind and visu
 
 Island searches use OpenStreetMap's Nominatim service. A map is downloaded only after the user selects a search result. Road and place data are stored locally as JSON map files in the app's private files and are available offline after download. The app does not request GPS or location permission.
 
-Map and place coverage depend on volunteer mapping. A nearby place coordinate is not proof that an entrance faces a road. The app does not guess roads at line crossings; it requires a shared road-node identifier. It does not provide real-world pedestrian safety directions.
+Map and place coverage depend on volunteer mapping. A nearby place coordinate is not proof that an entrance faces a road. Freshly downloaded maps use shared road-node IDs for junctions. Imported backups omit those IDs, so their junctions are estimates from identical coordinate vertices; arbitrary line crossings are not treated as connections. The app does not provide real-world pedestrian safety directions.
+
+Haluvi Navigation backup exports include per-island road geometry, place records and user road names. The backup format omits OpenStreetMap node IDs, so imported junctions are inferred from shared coordinate vertices and are marked as estimates in Explorer. Full backups may include Google Places records; Explorer skips Google-sourced places to avoid reusing Google data as offline map content. Use a shared map export for data that may be reused with others.
 
 Map data © OpenStreetMap contributors, available under the Open Database License (ODbL): <https://www.openstreetmap.org/copyright>.
 
 ## Build and release
 
-Every push to `main` runs the Kotlin geometry tests, verifies the permanent signing certificate, builds the release APK, checks the APK certificate, and publishes a GitHub Release with the directly downloadable signed APK. The GitHub Actions secrets must contain `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ANDROID_KEY_ALIAS`; the workflow pins the expected certificate fingerprint. The build number comes from the workflow run number so future APKs can update earlier installs.
+Every push to `main` runs the Kotlin road-network and import tests, verifies the permanent signing certificate, builds the release APK, checks the APK certificate, and publishes a GitHub Release with the directly downloadable signed APK. The GitHub Actions secrets must contain `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ANDROID_KEY_ALIAS`; the workflow pins the expected certificate fingerprint. Build numbers increase only when a release is published, so failed builds do not consume a number.
 
 ## Development
 

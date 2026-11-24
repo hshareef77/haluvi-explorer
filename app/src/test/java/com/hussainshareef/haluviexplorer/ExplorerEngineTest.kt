@@ -36,6 +36,23 @@ class ExplorerEngineTest {
         assertTrue(engine.connections().isEmpty())
     }
 
+    @Test fun sharedInternalNetworkNodeSplitsWayIntoConnectedRoadSections() {
+        val through = Road("through", "Through Road", "residential", listOf(10, 11, 12), listOf(
+            GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001), GeoPoint(0.0, 0.002)
+        ))
+        val branch = Road("branch", "Branch Road", "residential", listOf(11, 13), listOf(
+            GeoPoint(0.0, 0.001), GeoPoint(0.001, 0.001)
+        ))
+        val sections = splitRoadsAtSharedNodes(listOf(through, branch))
+        val throughParts = sections.filter { it.name == "Through Road" }
+        assertEquals(2, throughParts.size)
+        assertEquals(11L, throughParts[0].endNode)
+        assertTrue(sections.any { it.name == "Branch Road" && it.startNode == 11L })
+        val map = MapData("Test", 0, sections, emptyList())
+        val engine = ExplorerEngine(map).apply { start(throughParts[0], throughParts[0].lengthMeters) }
+        assertEquals(setOf("Through Road", "Branch Road"), engine.connections().map { it.road.name }.toSet())
+    }
+
     @Test fun movingBackwardKeepsFacingAndUsesActualRoadDirection() {
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), emptyList()))
         engine.start(eastRoad, eastRoad.lengthMeters / 2)
@@ -82,5 +99,33 @@ class ExplorerEngineTest {
         assertEquals("Main Road", map.roads.single().name)
         assertEquals(listOf(1L, 2L), map.roads.single().nodeIds)
         assertEquals("Island Pharmacy", map.places.single().name)
+    }
+
+    @Test fun importsNavigationSharedMapRoadsAndNonGooglePlacesOnly() {
+        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17505,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17506,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
+        val batch = HaluviBackupImporter.parse(backup)
+        assertEquals(1, batch.maps.size)
+        val map = batch.maps.single()
+        assertEquals("K:Malé", map.sourceIslandKey)
+        assertEquals("Kaafu Malé", map.islandName)
+        assertEquals(2, map.roads.size)
+        assertTrue(map.roads.any { it.name == "Majeedhee Magu" })
+        assertEquals("left", ExplorerEngine(map).also { it.start(map.roads.first(), map.roads.first().lengthMeters / 2) }
+            .nearbyPlaces(50.0).single().side)
+        assertEquals(1, map.places.size)
+        assertEquals("osm-1", map.places.single().id)
+        assertFalse(map.places.single().entranceVerified)
+        assertEquals(1, batch.googlePlacesSkipped)
+        assertEquals(0, batch.unsupportedPlacesSkipped)
+        assertFalse(map.connectivityVerified)
+    }
+
+    @Test fun refusesNonNavigationJsonAsMapBackup() {
+        try {
+            HaluviBackupImporter.parse("{\"roads\":[]}")
+            fail("A different JSON file must not be imported as a Navigation backup.")
+        } catch (_: IllegalArgumentException) {
+            // Expected.
+        }
     }
 }

@@ -30,10 +30,14 @@ data class MapData(
     val islandName: String,
     val downloadedAt: Long,
     val roads: List<Road>,
-    val places: List<Place>
+    val places: List<Place>,
+    val sourceIslandKey: String = "",
+    val connectivityVerified: Boolean = true
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("islandName", islandName)
+        put("sourceIslandKey", sourceIslandKey)
+        put("connectivityVerified", connectivityVerified)
         put("downloadedAt", downloadedAt)
         put("roads", JSONArray().apply {
             roads.forEach { road -> put(JSONObject().apply {
@@ -50,7 +54,8 @@ data class MapData(
         })
     }
 
-    fun saveName(): String = islandName.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "island" }
+    fun saveName(): String = (sourceIslandKey.ifBlank { islandName }).lowercase()
+        .replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "island" }
 
     companion object {
         private val roadKinds = setOf("motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street", "service", "pedestrian", "footway", "path", "track", "steps", "cycleway")
@@ -76,7 +81,8 @@ data class MapData(
                         GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified")))
                 }
             }
-            return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places)
+            return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places,
+                json.optString("sourceIslandKey"), json.optBoolean("connectivityVerified", true))
         }
 
         fun fromOverpass(islandName: String, response: String): MapData {
@@ -112,7 +118,32 @@ data class MapData(
                     places[place.id] = place
                 }
             }
-            return MapData(islandName, System.currentTimeMillis(), roads, places.values.toList())
+            return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList())
+        }
+    }
+}
+
+/** Splits ways at shared network vertices so a junction inside a long curved way becomes a usable endpoint. */
+fun splitRoadsAtSharedNodes(roads: List<Road>): List<Road> {
+    val roadsAtNode = HashMap<Long, MutableSet<String>>()
+    roads.forEach { road -> road.nodeIds.forEach { id -> roadsAtNode.getOrPut(id) { linkedSetOf() }.add(road.id) } }
+    val shared = roadsAtNode.filterValues { it.size > 1 }.keys
+    return buildList {
+        roads.forEach { road ->
+            if (road.points.size < 2 || road.nodeIds.size != road.points.size) return@forEach
+            val cuts = (listOf(0, road.nodeIds.lastIndex) + road.nodeIds.indices.filter { it in 1 until road.nodeIds.lastIndex && road.nodeIds[it] in shared })
+                .distinct().sorted()
+            if (cuts.size <= 2) { add(road); return@forEach }
+            for (i in 0 until cuts.lastIndex) {
+                val start = cuts[i]
+                val end = cuts[i + 1]
+                if (end <= start) continue
+                add(road.copy(
+                    id = "${road.id}:part:$i",
+                    points = road.points.subList(start, end + 1),
+                    nodeIds = road.nodeIds.subList(start, end + 1)
+                ))
+            }
         }
     }
 }

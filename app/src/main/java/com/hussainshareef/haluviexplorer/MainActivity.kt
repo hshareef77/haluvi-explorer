@@ -2,6 +2,8 @@ package com.hussainshareef.haluviexplorer
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -45,6 +47,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var returnJourney = false
     private var lastScreenBack: (() -> Unit)? = null
     private var lastBackLabel = "Back to Main Menu"
+    private val importRequestCode = 7412
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +70,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         stopAutoWalk(null)
         tts?.stop(); tts?.shutdown(); tts = null
         super.onDestroy()
+    }
+
+    @Deprecated("Use the system document picker result")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == importRequestCode && resultCode == RESULT_OK) data?.data?.let(::importMapBackup)
     }
 
     private fun showHome() {
@@ -143,6 +152,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
             addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
             addButton("Download an Island Map") { searchIsland() }
+            addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
+            addText("Import adds compatible OpenStreetMap and user-saved roads and places. Google-sourced places are skipped because they cannot be reused as offline map data.", 15f)
             val files = store.all()
             if (files.isEmpty()) addText("No island maps downloaded yet.")
             files.forEach { file ->
@@ -165,12 +176,48 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun chooseBackupFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain", "application/octet-stream"))
+        }
+        runCatching { startActivityForResult(intent, importRequestCode) }
+            .onFailure { Toast.makeText(this, "The file picker could not be opened.", Toast.LENGTH_LONG).show() }
+    }
+
+    private fun importMapBackup(uri: Uri) {
+        page("Import Map Data", "Back to Map Management", ::showMapManager) {
+            val status = addStatus("Reading the selected backup. This may take a short time.")
+            addButton("Back to Map Management") { showMapManager() }
+            Thread {
+                val result = runCatching {
+                    val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("The selected file could not be read.")
+                    store.importNavigationBackup(text)
+                }
+                mainHandler.post {
+                    result.onSuccess { report ->
+                        status.text = "Import complete. ${report.mapsProcessed} island maps checked, ${report.roadsAdded} roads and ${report.placesAdded} places added. " +
+                            (if (report.googlePlacesSkipped > 0) "${report.googlePlacesSkipped} Google places skipped. " else "") +
+                            (if (report.unsupportedPlacesSkipped > 0) "${report.unsupportedPlacesSkipped} unsupported place entries skipped." else "")
+                        announce(status.text.toString(), status)
+                    }.onFailure {
+                        status.text = "Import failed. Choose a Haluvi Navigation backup or shared map JSON file. ${it.message ?: ""}"
+                        announce(status.text.toString(), status)
+                    }
+                }
+            }.start()
+        }
+    }
+
     private fun showMapOverview() {
         val map = loadedMap ?: return showMapManager()
         page("${map.islandName} Map Overview", "Back to Map Management", ::showMapManager) {
             addText("Offline map overview for ${map.islandName}.")
             addText("${map.roads.size} mapped roads, ${map.places.size} mapped places, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
             addText("This map comes from OpenStreetMap. Coverage and positional accuracy depend on available community mapping.")
+            if (!map.connectivityVerified) addText("Road connections in this imported backup are inferred from identical coordinate points because the backup omits OpenStreetMap node IDs. Treat those junctions as estimates.")
             addButton("Explore Roads") { chooseRoad() }
             addButton("Explore Places") { showPlaceList() }
             addButton("Back to Main Menu") { showHome() }
@@ -385,6 +432,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         page("Exploration", "Back to ${map.islandName} Roads", { chooseRoad() }) {
             val current = e.road
             addText("Island: ${map.islandName}. Road: ${current?.name ?: "none"}.")
+            if (!map.connectivityVerified) addText("This imported backup does not include OSM node IDs. Possible road connections are estimated from identical coordinates.")
             val live = addStatus(e.whereAmI())
             val pos = e.position()
             addText(pos?.let { "Current virtual position: ${"%.6f".format(Locale.US, it.lat)}, ${"%.6f".format(Locale.US, it.lon)}." }.orEmpty())
@@ -402,7 +450,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val atEnd = e.atRoadEnd()
             val branches = e.connections()
             if (atEnd) {
-                addText(if (branches.isEmpty()) "Road endpoint. No connected road is mapped here." else "Junction. ${branches.size} connected roads are mapped.")
+                val junctionLabel = if (map.connectivityVerified) "Junction" else "Possible junction (estimated from shared coordinates)"
+                addText(if (branches.isEmpty()) "Road endpoint. No connected road is mapped here." else "$junctionLabel. ${branches.size} connected roads are listed.")
                 if (branches.isNotEmpty()) {
                     addButton("Turn Left") { chooseBranch("left", live) }
                     addButton("Continue Straight") { chooseBranch("straight", live) }
@@ -429,7 +478,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (amount == 0.0) { announce("You are already at the road endpoint.", status); return }
         val ending = if (e.atRoadEnd()) {
             val branches = e.connections()
-            if (branches.isEmpty()) "You reached the end of the road." else "You reached a junction. ${branches.size} connected roads. ${branches.joinToString { it.road.name }}. Choose a road to continue."
+            if (branches.isEmpty()) "You reached the end of the road." else if (loadedMap?.connectivityVerified == true)
+                "You reached a junction. ${branches.size} connected roads. ${branches.joinToString { it.road.name }}. Choose a road to continue."
+            else "Possible junction based on shared map coordinates. ${branches.joinToString { it.road.name }} may connect here. Choose only if this imported connection seems correct."
         } else "Moved forward ${amount.roundToInt()} metres."
         checkNearbyPlaces(status)
         changed(ending, status)
@@ -447,25 +498,31 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val dist = e.remainingToRoadEnd()
         if (dist < 0.5) {
             val options = e.connections()
-            announce(if (options.isEmpty()) "Road endpoint. No connecting road is mapped." else "Junction reached. Connected roads: ${options.joinToString { it.road.name }}." , status)
+            announce(if (options.isEmpty()) "Road endpoint. No connecting road is mapped." else if (loadedMap?.connectivityVerified == true)
+                "Junction reached. Connected roads: ${options.joinToString { it.road.name }}."
+            else "Possible junction reached. These roads may connect here based on shared coordinates: ${options.joinToString { it.road.name }}.", status)
             return
         }
         val moved = e.move(dist)
         val options = e.connections()
-        changed(if (options.isEmpty()) "Reached the end of ${e.road?.name}. No connected road is mapped." else "Reached a junction on ${e.road?.name}. ${options.size} connected roads: ${options.joinToString { it.road.name }}.", status)
+        changed(if (options.isEmpty()) "Reached the end of ${e.road?.name}. No connected road is mapped." else if (loadedMap?.connectivityVerified == true)
+            "Reached a junction on ${e.road?.name}. ${options.size} connected roads: ${options.joinToString { it.road.name }}."
+        else "Possible junction on ${e.road?.name}, inferred from shared coordinates. ${options.joinToString { it.road.name }} may connect here.", status)
     }
 
     private fun chooseBranch(turn: String, status: TextView?) {
         val e = engine ?: return
         val selected = e.chooseTurn(turn)
         if (selected == null) { announce("No mapped ${turn} turn is available here. Choose one of the connected roads.", status); return }
-        changed("Turned $turn onto ${selected.road.name}. Facing ${e.facing()}.", status)
+        changed(if (loadedMap?.connectivityVerified == true) "Turned $turn onto ${selected.road.name}. Facing ${e.facing()}."
+            else "Followed the estimated $turn connection onto ${selected.road.name}. The backup does not verify this junction. Facing ${e.facing()}.", status)
     }
 
     private fun chooseConnection(options: List<RoadConnection>) {
         val map = loadedMap ?: return
         page("Choose Connected Road", "Back to Exploration", ::showExplore) {
-            addText("Choose one of the roads actually connected at this junction.")
+            addText(if (map.connectivityVerified) "Choose one of the roads connected at this junction."
+                else "These possible connections are estimated from shared coordinates in the imported backup.")
             options.forEach { option -> addButton("${option.road.name}, ${compassName(option.bearingOut)}") {
                 engine?.takeConnection(option)
                 showExplore()
@@ -577,7 +634,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         return
                     }
                     autoWalking = false
-                    announce(if (connections.isEmpty()) "Automatic walking paused at the road endpoint. No road connection is mapped." else "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here.", status)
+                    val junctionMessage = if (map.connectivityVerified) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
+                    else "Automatic walking paused at a possible junction. ${connections.joinToString { it.road.name }} may connect here based on coordinates."
+                    announce(if (connections.isEmpty()) "Automatic walking paused at the road endpoint. No road connection is mapped." else junctionMessage, status)
                     persistSession(); return
                 }
                 status?.text = "Walking on ${e.road?.name}. ${e.remainingToRoadEnd().roundToInt()} metres to the road endpoint."
