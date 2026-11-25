@@ -165,7 +165,7 @@ class ExplorerEngineTest {
         val path = continuousNamedRoadPaths(listOf(east, west)).single()
         assertTrue(path.continuousPath)
         assertEquals(listOf(101L, 102L, 103L), path.nodeIds)
-        assertEquals(2, path.points.size)
+        assertEquals(3, path.points.size)
         assertEquals(west.lengthMeters + east.lengthMeters, path.lengthMeters, 0.1)
         assertTrue(path.nodeIdsVerified)
         assertEquals(path.id, findRoadPathById(listOf(west, east), path.id)?.id)
