@@ -20,6 +20,8 @@ class MapDownloadHandle {
     fun cancel() { cancelled = true; connection?.disconnect() }
 }
 
+private class NoRoadGeometryException(message: String) : IllegalStateException(message)
+
 data class IslandArea(
     val displayName: String,
     val shortName: String,
@@ -27,7 +29,9 @@ data class IslandArea(
     val west: Double,
     val north: Double,
     val east: Double,
-    val approximate: Boolean = false
+    val approximate: Boolean = false,
+    /** Expanded fallback bounds around the official Navigation island catalog point. */
+    val fallbackBounds: List<Double> = emptyList()
 )
 
 class OpenStreetMapRepository {
@@ -71,7 +75,8 @@ class OpenStreetMapRepository {
                     if (name.isNotBlank()) {
                         if (center != null && normalizedPlaceName(name) != normalizedPlaceName(center.name)) continue
                         val label = if (center != null && atoll != null) "${center.name}, ${atoll.fullname} atoll" else item.optString("display_name", name)
-                        add(IslandArea(label, name, south, west, north, east))
+                        val fallback = center?.let { listOf(it.latitude - 0.034, it.longitude - 0.034, it.latitude + 0.034, it.longitude + 0.034) }.orEmpty()
+                        add(IslandArea(label, name, south, west, north, east, fallbackBounds = fallback))
                     }
                 }
             }.distinctBy { it.shortName.lowercase() to listOf(it.south, it.west, it.north, it.east) }.take(5)
@@ -82,7 +87,8 @@ class OpenStreetMapRepository {
                 val lonRadius = 0.03 / kotlin.math.cos(Math.toRadians(center.latitude)).coerceAtLeast(0.5)
                 listOf(IslandArea("${center.name}, ${atoll.fullname} atoll (approximate area around island centre)", center.name,
                     center.latitude - latRadius, center.longitude - lonRadius,
-                    center.latitude + latRadius, center.longitude + lonRadius, approximate = true))
+                    center.latitude + latRadius, center.longitude + lonRadius, approximate = true,
+                    fallbackBounds = listOf(center.latitude - 0.034, center.longitude - 0.034, center.latitude + 0.034, center.longitude + 0.034)))
             } else emptyList()
             if (finalResults.isEmpty()) throw IllegalStateException("No Maldives island or settlement result found. Try selecting the island from its atoll list.")
             main.post { callback(Result.success(finalResults)) }
@@ -94,43 +100,63 @@ class OpenStreetMapRepository {
         executor.execute {
         try {
             check(!handle.cancelled) { "Download cancelled." }
-            val box = "${area.south},${area.west},${area.north},${area.east}"
-            val query = """
-                [out:json][timeout:90];
-                (
-                  way[highway]($box);
-                  nwr[amenity]($box);
-                  nwr[shop]($box);
-                  nwr[tourism]($box);
-                  nwr[leisure]($box);
-                  nwr[healthcare]($box);
-                  nwr[office]($box);
-                  nwr[education]($box);
-                );
-                out body geom center;
-            """.trimIndent()
-            var response: String? = null
-            var failure: Throwable? = null
-            for (endpoint in listOf("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter")) {
-                try {
-                    main.post { onProgress(MapDownloadProgress("Connecting to map service for ${area.shortName}")) }
-                    response = postForm(endpoint, "data=" + enc(query), handle) { bytes, total ->
-                        main.post { onProgress(MapDownloadProgress("Downloading map data for ${area.shortName}", bytes, total)) }
-                    }
-                    break
-                } catch (t: Throwable) { failure = t; if (handle.cancelled) throw t }
+            val selectedAttempt = runCatching { downloadBox(area, area.south, area.west, area.north, area.east, handle, onProgress) }
+            var data = selectedAttempt.getOrNull()
+            if (data == null && selectedAttempt.exceptionOrNull() !is NoRoadGeometryException) throw selectedAttempt.exceptionOrNull() ?: IllegalStateException("Map download failed.")
+            if (data == null && area.fallbackBounds.size == 4) {
+                check(!handle.cancelled) { "Download cancelled." }
+                main.post { onProgress(MapDownloadProgress("No roads in the selected boundary. Retrying with the expanded island area.")) }
+                val b = area.fallbackBounds
+                data = downloadBox(area, b[0], b[1], b[2], b[3], handle, onProgress)
             }
-            if (response == null) throw (failure ?: IllegalStateException("Map download failed"))
+            if (data == null || data.roads.isEmpty()) throw IllegalStateException("No recognized road geometry was returned for ${area.shortName} after checking available map servers and island bounds.")
+            val completed = data
             check(!handle.cancelled) { "Download cancelled." }
-            main.post { onProgress(MapDownloadProgress("Processing places and road geometry")) }
-            val data = MapData.fromOverpass(area.shortName, response)
-            if (data.roads.isEmpty()) throw IllegalStateException("The map source returned no road geometry for ${area.shortName}.")
-            check(!handle.cancelled) { "Download cancelled." }
-            main.post { onProgress(MapDownloadProgress("Map data processed: ${data.roads.size} road sections and ${data.places.size} places")) }
-            main.post { callback(Result.success(data)) }
+            main.post { onProgress(MapDownloadProgress("Map data processed: ${completed.roads.size} road sections and ${completed.places.size} places")) }
+            main.post { callback(Result.success(completed)) }
         } catch (t: Throwable) { main.post { callback(Result.failure(if (handle.cancelled) IllegalStateException("Download cancelled.") else t)) } }
         }
         return handle
+    }
+
+    private fun downloadBox(area: IslandArea, south: Double, west: Double, north: Double, east: Double,
+                            handle: MapDownloadHandle, onProgress: (MapDownloadProgress) -> Unit): MapData {
+        val box = "$south,$west,$north,$east"
+        val query = """
+            [out:json][timeout:90];
+            (
+              way[highway]($box);
+              nwr[amenity]($box);
+              nwr[shop]($box);
+              nwr[tourism]($box);
+              nwr[leisure]($box);
+              nwr[healthcare]($box);
+              nwr[office]($box);
+              nwr[education]($box);
+            );
+            out body geom center;
+        """.trimIndent()
+        var lastFailure: Throwable? = null
+        var gotResponseWithoutRoads = false
+        val servers = listOf("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
+        servers.forEachIndexed { index, endpoint ->
+            try {
+                check(!handle.cancelled) { "Download cancelled." }
+                main.post { onProgress(MapDownloadProgress("Connecting to map server ${index + 1} of ${servers.size} for ${area.shortName}")) }
+                val response = postForm(endpoint, "data=" + enc(query), handle) { bytes, total ->
+                    main.post { onProgress(MapDownloadProgress("Downloading map data for ${area.shortName}", bytes, total)) }
+                }
+                main.post { onProgress(MapDownloadProgress("Processing places and road geometry")) }
+                val data = MapData.fromOverpass(area.shortName, response)
+                if (data.roads.isNotEmpty()) return data
+                gotResponseWithoutRoads = true
+            } catch (t: Throwable) {
+                lastFailure = t
+                if (handle.cancelled) throw t
+            }
+        }
+        if (gotResponseWithoutRoads) throw NoRoadGeometryException("Map servers returned data without recognized road geometry.")
+        throw lastFailure ?: IllegalStateException("Map download failed.")
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
@@ -141,8 +167,8 @@ class OpenStreetMapRepository {
     private fun request(urlString: String, body: String?, handle: MapDownloadHandle? = null, progress: ((Long, Long) -> Unit)? = null): String {
         val connection = URL(urlString).openConnection() as HttpURLConnection
         handle?.connection = connection
-        connection.connectTimeout = 25_000
-        connection.readTimeout = 120_000
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 45_000
         connection.requestMethod = if (body == null) "GET" else "POST"
         connection.setRequestProperty("User-Agent", "HaluviExplorer/0.1.0 (Android offline virtual exploration)")
         connection.setRequestProperty("Accept", "application/json")

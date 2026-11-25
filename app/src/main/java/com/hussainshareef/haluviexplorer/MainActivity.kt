@@ -184,20 +184,35 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("${summaries.size} islands have an offline map. $roads road sections and $places places saved.", 19f, live = true)
             if (summaries.isEmpty()) addText("No island maps downloaded yet.")
             summaries.forEach { summary ->
-                val file = summary.file; val map = summary.map
-                addText("${map.islandName}. ${map.roads.size} road sections, ${map.places.size} mapped places, ${file.length() / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(map.downloadedAt))}.")
-                addButton("Explore ${map.islandName}") { loadedMap = map; loadedFile = file; chooseRoad() }
-                addButton("Explore places on ${map.islandName}") { loadedMap = map; loadedFile = file; showPlaceList() }
-                addButton("Update ${map.islandName}") { searchIsland(map.islandName.substringBefore(",")) }
-                addButton("Delete map for ${map.islandName}") {
+                val file = summary.file
+                addText("${summary.islandName}. ${summary.roadCount} road sections, ${summary.placeCount} mapped places, ${summary.length / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(summary.downloadedAt))}.")
+                addButton("Explore ${summary.islandName}") { openSavedMap(summary, false, "Back to Map Management", ::showMapManager) }
+                addButton("Explore places on ${summary.islandName}") { openSavedMap(summary, true, "Back to Map Management", ::showMapManager) }
+                addButton("Update ${summary.islandName}") { searchIsland(summary.islandName.substringBefore(",")) }
+                addButton("Delete map for ${summary.islandName}") {
                     AlertDialog.Builder(this@MainActivity).setTitle("Delete island map?")
-                        .setMessage("Delete the saved offline map for ${map.islandName} from this phone?")
+                        .setMessage("Delete the saved offline map for ${summary.islandName} from this phone?")
                         .setPositiveButton("Delete") { _, _ -> Thread { store.delete(file); mainHandler.post { if (prefs.getString("session_map", null) == file.name) prefs.edit().remove("session_map").apply(); showMapManager() } }.start() }
                         .setNegativeButton("Cancel", null).show()
                 }
             }
             addButton("OpenStreetMap attribution") { showAttribution() }
         }
+    }
+
+    private fun openSavedMap(summary: StoredMapSummary, forPlaces: Boolean, backLabel: String, back: () -> Unit) {
+        page("Opening ${summary.islandName}", backLabel, back) { addText("Loading the saved map…", live = true) }
+        val generation = screenGeneration
+        Thread {
+            val result = runCatching { store.load(summary.file) }
+            mainHandler.post {
+                if (screenGeneration != generation) return@post
+                result.onSuccess { map ->
+                    loadedMap = map; loadedFile = summary.file
+                    if (forPlaces) showPlaceList() else chooseRoad()
+                }.onFailure { Toast.makeText(this, "Could not open the saved map. ${it.message ?: ""}", Toast.LENGTH_LONG).show(); back() }
+            }
+        }.start()
     }
 
     private fun chooseBackupFile() {
@@ -426,9 +441,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             fun findSavedMap(island: IslandEntry): StoredMapSummary? {
                 val islandKey = "${atoll.code}:${island.name}"
                 return summaries.orEmpty().firstOrNull { summary ->
-                    val file = summary.file; val map = summary.map
-                    normalizedIsland(map.sourceIslandKey) == normalizedIsland(islandKey) ||
-                        normalizedIsland(map.islandName).let { it.startsWith(normalizedIsland(island.name)) || it.endsWith(normalizedIsland(island.name)) } ||
+                    val file = summary.file
+                    normalizedIsland(summary.sourceIslandKey) == normalizedIsland(islandKey) ||
+                        normalizedIsland(summary.islandName).let { it.startsWith(normalizedIsland(island.name)) || it.endsWith(normalizedIsland(island.name)) } ||
                         file.nameWithoutExtension.equals(island.name.replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-'), true)
                 }
             }
@@ -444,8 +459,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         setOnClickListener {
                             if (saved == null) searchIsland("${island.name}, ${atoll.fullname}")
                             else {
-                                loadedMap = saved.map; loadedFile = saved.file
-                                if (forPlaces) showPlaceList() else chooseRoad()
+                                openSavedMap(saved, forPlaces, "Back to Island List") { chooseSavedIsland(atoll, forPlaces) }
                             }
                         }
                     }

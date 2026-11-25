@@ -58,7 +58,7 @@ data class MapData(
         .replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "island" }
 
     companion object {
-        private val roadKinds = setOf("motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street", "service", "pedestrian", "footway", "path", "track", "steps", "cycleway")
+        private val roadKinds = setOf("motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street", "service", "pedestrian", "footway", "path", "track", "steps", "cycleway", "road", "bridleway", "corridor", "platform", "raceway")
         private val placeKeys = listOf("amenity", "shop", "tourism", "leisure", "healthcare", "office", "education")
 
         fun fromJson(json: JSONObject): MapData {
@@ -99,8 +99,9 @@ data class MapData(
                     val geometry = e.optJSONArray("geometry") ?: JSONArray()
                     val pointList = (0 until geometry.length()).mapNotNull { j -> geometry.optJSONObject(j)?.let { GeoPoint(it.optDouble("lat"), it.optDouble("lon")) } }
                     val nodeArray = e.optJSONArray("nodes") ?: JSONArray()
-                    val nodeIds = (0 until nodeArray.length()).map { nodeArray.optLong(it) }
-                    if (pointList.size >= 2 && pointList.size == nodeIds.size) {
+                    val nodeIds = if (nodeArray.length() == pointList.size) (0 until nodeArray.length()).map { nodeArray.optLong(it) }
+                        else pointList.map(::coordinateNodeId)
+                    if (pointList.size >= 2) {
                         roads += Road("w$id", tags.optString("name", tags.optString("ref", "Unnamed road")), tags.optString("highway"), nodeIds, pointList)
                     }
                 }
@@ -121,6 +122,12 @@ data class MapData(
             return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList())
         }
     }
+}
+
+private fun coordinateNodeId(point: GeoPoint): Long {
+    val lat = (point.lat * 10_000_000).roundToLong().toInt()
+    val lon = (point.lon * 10_000_000).roundToLong().toInt()
+    return (lat.toLong() shl 32) xor (lon.toLong() and 0xffffffffL)
 }
 
 /** Splits ways at shared network vertices so a junction inside a long curved way becomes a usable endpoint. */

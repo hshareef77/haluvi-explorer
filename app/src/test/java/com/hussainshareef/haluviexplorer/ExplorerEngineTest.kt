@@ -120,6 +120,13 @@ class ExplorerEngineTest {
         assertEquals("Island Pharmacy", map.places.single().name)
     }
 
+    @Test fun parserKeepsHighwayRoadWaysWhenNodeIdsAreMissing() {
+        val response = """{"elements":[{"type":"way","id":77,"geometry":[{"lat":4.17,"lon":73.50},{"lat":4.171,"lon":73.501}],"tags":{"highway":"road","name":"Mapped Lane"}}]}"""
+        val map = MapData.fromOverpass("Malé", response)
+        assertEquals("Mapped Lane", map.roads.single().name)
+        assertEquals(2, map.roads.single().nodeIds.size)
+    }
+
     @Test fun importsNavigationSharedMapRoadsAndNonGooglePlacesOnly() {
         val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17515,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17516,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
         val batch = HaluviBackupImporter.parse(backup)
