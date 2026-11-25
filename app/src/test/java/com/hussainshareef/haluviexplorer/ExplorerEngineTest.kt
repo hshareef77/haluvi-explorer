@@ -167,6 +167,15 @@ class ExplorerEngineTest {
         assertFalse(map.connectivityVerified)
     }
 
+    @Test fun placeMergePreservesDifferentSourcesAtTheSameMappedPosition() {
+        val point = GeoPoint(4.175, 73.51)
+        val osm = Place("osm-1", "Central Pharmacy", "pharmacy", point, false, "osm_map")
+        val google = Place("google-1", "Central Pharmacy", "pharmacy", point, false, "google")
+        val merged = mergePlacesPreservingSources(listOf(osm), listOf(google, google))
+        assertEquals(2, merged.size)
+        assertEquals(setOf("osm_map", "google"), merged.map { it.source }.toSet())
+    }
+
     @Test fun importsRTLBusStopsInsteadOfDiscardingOtherSourceRecords() {
         val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","locations":[{"id":"rtl-1","name":"Bus Stop","lat":4.1751,"lon":73.5107,"source":"rtl","categoryId":"bus","islandKey":"K:Malé","islandName":"Kaafu Malé"}]}"""
         val batch = HaluviBackupImporter.parse(backup)

@@ -58,10 +58,7 @@ class MapStore(context: Context) {
             val oldRoads = oldMap?.roads.orEmpty()
             val oldPlaces = oldMap?.places.orEmpty()
             val roads = (oldRoads + incoming.roads).distinctBy { "${it.name.trim().lowercase()}|${geometryKey(it.points)}" }
-            val places = (oldPlaces + incoming.places).fold(mutableListOf<Place>()) { kept, place ->
-                if (kept.none { it.id == place.id || (it.name.equals(place.name, true) && distanceMeters(it.point, place.point) <= 3.0) }) kept.add(place)
-                kept
-            }
+            val places = mergePlacesPreservingSources(oldPlaces, incoming.places)
             roadsAdded += roads.size - oldRoads.size
             placesAdded += places.size - oldPlaces.size
             val merged = MapData(incoming.islandName, maxOf(oldMap?.downloadedAt ?: 0L, incoming.downloadedAt), roads, places,
@@ -114,3 +111,14 @@ class MapStore(context: Context) {
 
 data class MapImportSummary(val mapsProcessed: Int, val roadsAdded: Int, val placesAdded: Int,
     val unsupportedPlacesSkipped: Int)
+
+/** Only repeated records with the same source and stable ID are collapsed; cross-source places remain distinct. */
+internal fun mergePlacesPreservingSources(existing: List<Place>, incoming: List<Place>): List<Place> {
+    val merged = ArrayList<Place>(existing.size + incoming.size)
+    merged.addAll(existing)
+    for (place in incoming) {
+        val duplicate = merged.any { it.id == place.id && it.source.equals(place.source, ignoreCase = true) }
+        if (!duplicate) merged.add(place)
+    }
+    return merged
+}
