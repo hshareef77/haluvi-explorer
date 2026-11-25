@@ -831,18 +831,29 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val e = engine ?: return
         val next = e.nextPlace()
         if (next == null) { announce("No more mapped places ahead on ${e.road?.name}.", status); return }
+        val crossings = e.roadCrossingsTo(next.alongDistance)
         e.moveAlongRoadTo(next.alongDistance)
+        e.rememberPlaceNavigation(next.place)
         e.markVisited(next.place)
-        changed("${next.place.name}, ${next.place.category}, ${next.side}, on ${e.road?.name}.", status)
+        changed(placeStepAnnouncement("Next place", next, crossings), status)
     }
 
     private fun moveToPreviousPlace(status: TextView?) {
         val e = engine ?: return
         val place = e.previousPlace()
         if (place == null) { announce("No more mapped places behind on ${e.road?.name}.", status); return }
+        val crossings = e.roadCrossingsTo(place.alongDistance, keepFacing = true)
         e.moveAlongRoadTo(place.alongDistance, keepFacing = true)
+        e.rememberPlaceNavigation(place.place)
         e.markVisited(place.place)
-        changed("${place.place.name}, ${place.place.category}, ${place.side}, on ${e.road?.name}.", status)
+        changed(placeStepAnnouncement("Previous place", place, crossings), status)
+    }
+
+    private fun placeStepAnnouncement(label: String, place: NearbyPlace, crossings: List<RoadCrossing>): String {
+        val crossingText = crossings.takeIf { it.isNotEmpty() }?.joinToString(separator = "; ", prefix = " On the way, you passed ") { crossing ->
+            "${if (crossing.verified) "mapped junction" else "possible junction"} with ${crossing.roadName} on your ${crossing.side}"
+        }.orEmpty()
+        return "$label: ${place.place.name}, ${place.place.category}, ${place.side} of ${engine?.road?.name}.$crossingText"
     }
 
     private fun showLookAround() {

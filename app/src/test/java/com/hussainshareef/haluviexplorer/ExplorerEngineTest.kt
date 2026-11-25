@@ -159,6 +159,66 @@ class ExplorerEngineTest {
         assertEquals("Second", engine.nextPlace()?.place?.name)
     }
 
+    @Test fun previousPlaceWalksBackThroughTheSameRoadPlaces() {
+        val first = Place("one", "First", "shop", GeoPoint(0.0, 0.0002), false)
+        val second = Place("two", "Second", "shop", GeoPoint(0.0, 0.0008), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second)))
+        engine.start(eastRoad, 0.0)
+        val firstNext = engine.nextPlace()!!
+        assertEquals("First", firstNext.place.name)
+        engine.moveAlongRoadTo(firstNext.alongDistance)
+        engine.rememberPlaceNavigation(firstNext.place)
+        val secondNext = engine.nextPlace()!!
+        assertEquals("Second", secondNext.place.name)
+        engine.moveAlongRoadTo(secondNext.alongDistance)
+        engine.rememberPlaceNavigation(secondNext.place)
+        assertEquals("First", engine.previousPlace()?.place?.name)
+        engine.moveAlongRoadTo(firstNext.alongDistance, keepFacing = true)
+        engine.rememberPlaceNavigation(firstNext.place)
+        assertNull(engine.previousPlace())
+        assertEquals("Second", engine.nextPlace()?.place?.name)
+    }
+
+    @Test fun nextAndPreviousCanTraversePlacesAtTheSameRoadPosition() {
+        val first = Place("one", "Alpha", "shop", GeoPoint(0.0, 0.0005), false)
+        val second = Place("two", "Beta", "shop", GeoPoint(0.0, 0.0005), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(second, first)))
+        engine.start(eastRoad, 0.0)
+        val alpha = engine.nextPlace()!!
+        assertEquals("Alpha", alpha.place.name)
+        engine.moveAlongRoadTo(alpha.alongDistance)
+        engine.rememberPlaceNavigation(alpha.place)
+        val beta = engine.nextPlace()!!
+        assertEquals("Beta", beta.place.name)
+        engine.moveAlongRoadTo(beta.alongDistance)
+        engine.rememberPlaceNavigation(beta.place)
+        assertEquals("Alpha", engine.previousPlace()?.place?.name)
+    }
+
+    @Test fun placeNavigationReportsNamedRoadCrossingsAndTheirSide() {
+        val main = Road("main", "Main Road", "residential", listOf(1, 2, 3), listOf(
+            GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.0005), GeoPoint(0.0, 0.001)
+        ), nodeIdsVerified = true)
+        val side = Road("side", "North Street", "residential", listOf(2, 4), listOf(
+            GeoPoint(0.0, 0.0005), GeoPoint(0.0005, 0.0005)
+        ), nodeIdsVerified = true)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(main, side), emptyList()))
+        engine.start(main, 0.0)
+        val crossing = engine.roadCrossingsTo(main.lengthMeters).single()
+        assertEquals("North Street", crossing.roadName)
+        assertEquals("left", crossing.side)
+        assertTrue(crossing.verified)
+        assertTrue(engine.roadCrossingsTo(main.lengthMeters, keepFacing = true).isNotEmpty())
+    }
+
+    @Test fun geometricRoadCrossingWithoutSharedNodeIsNotAnnouncedAsAJunction() {
+        val main = Road("main", "Main Road", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)))
+        val crossing = Road("crossing", "Crossing Road", "residential", listOf(3, 4), listOf(GeoPoint(-0.001, 0.0005), GeoPoint(0.001, 0.0005)))
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(main, crossing), emptyList()))
+        engine.start(main, 0.0)
+        assertTrue(engine.roadCrossingsTo(main.lengthMeters).isEmpty())
+    }
+
     @Test fun connectedNamedSectionsBecomeOneEndToEndRoadPath() {
         val west = Road("w1", "Long Road", "residential", listOf(101, 102), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)), true)
         val east = Road("w2", "Long Road", "residential", listOf(102, 103), listOf(GeoPoint(0.0, 0.001), GeoPoint(0.0, 0.002)), true)
