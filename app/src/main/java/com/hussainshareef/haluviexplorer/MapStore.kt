@@ -140,8 +140,10 @@ internal fun mergePlacesPreservingSources(existing: List<Place>, incoming: List<
 }
 
 internal fun mergeDownloadedNetwork(existing: MapData?, network: MapData): MapData {
-    val customRoads = existing?.roads.orEmpty().filter { it.id.startsWith("user:") }
-    val roads = (network.roads + customRoads).distinctBy { roadGeometryKey(it.points) }
+    val networkGeometry = network.roads.map { roadGeometryKey(it.points) }.toSet()
+    // Keep saved roads the live OSM response did not contain; their connections remain marked as estimates.
+    val retainedRoads = existing?.roads.orEmpty().filter { roadGeometryKey(it.points) !in networkGeometry }
+    val roads = (network.roads + retainedRoads).distinctBy { roadGeometryKey(it.points) }
     val places = mergePlacesPreservingSources(existing?.places.orEmpty(), network.places)
     return network.copy(roads = roads, places = places,
         connectivityVerified = roads.isNotEmpty() && roads.all { it.nodeIdsVerified })

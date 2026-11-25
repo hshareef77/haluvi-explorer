@@ -684,7 +684,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val atEnd = e.atRoadEnd()
             val branches = e.connections()
             if (atEnd) {
-                val junctionLabel = if (map.connectivityVerified) "Junction" else "Possible junction (estimated from shared coordinates)"
+                val junctionVerified = current?.nodeIdsVerified == true && branches.all { it.road.nodeIdsVerified }
+                val junctionLabel = if (junctionVerified) "Junction" else "Possible junction (estimated from shared coordinates)"
                 addText(if (branches.isEmpty()) "Road endpoint. No connected road is mapped here." else "$junctionLabel. ${branches.size} connected roads are listed.")
                 if (branches.isNotEmpty()) {
                     addButton("Turn Left") { chooseBranch("left", live) }
@@ -712,7 +713,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (amount == 0.0) { announce("You are already at the road endpoint.", status); return }
         val ending = if (e.atRoadEnd()) {
             val branches = e.connections()
-            if (branches.isEmpty()) "You reached the end of the road." else if (loadedMap?.connectivityVerified == true)
+            val verified = e.road?.nodeIdsVerified == true && branches.all { it.road.nodeIdsVerified }
+            if (branches.isEmpty()) "You reached the end of the road." else if (verified)
                 "You reached a junction. ${branches.size} connected roads. ${branches.joinToString { it.road.name }}. Choose a road to continue."
             else "Possible junction based on shared map coordinates. ${branches.joinToString { it.road.name }} may connect here. Choose only if this imported connection seems correct."
         } else "Moved forward ${amount.roundToInt()} metres."
@@ -732,32 +734,36 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val dist = e.remainingToRoadEnd()
         if (dist < 0.5) {
             val options = e.connections()
-            announce(if (options.isEmpty()) "Road endpoint. No connecting road is mapped." else if (loadedMap?.connectivityVerified == true)
+            val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
+            announce(if (options.isEmpty()) "Road endpoint. No connecting road is mapped." else if (verified)
                 "Junction reached. Connected roads: ${options.joinToString { it.road.name }}."
             else "Possible junction reached. These roads may connect here based on shared coordinates: ${options.joinToString { it.road.name }}.", status)
             return
         }
         val moved = e.move(dist)
         val options = e.connections()
-        changed(if (options.isEmpty()) "Reached the end of ${e.road?.name}. No connected road is mapped." else if (loadedMap?.connectivityVerified == true)
+        val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
+        changed(if (options.isEmpty()) "Reached the end of ${e.road?.name}. No connected road is mapped." else if (verified)
             "Reached a junction on ${e.road?.name}. ${options.size} connected roads: ${options.joinToString { it.road.name }}."
         else "Possible junction on ${e.road?.name}, inferred from shared coordinates. ${options.joinToString { it.road.name }} may connect here.", status)
     }
 
     private fun chooseBranch(turn: String, status: TextView?) {
         val e = engine ?: return
+        val currentVerified = e.road?.nodeIdsVerified == true
         val selected = e.chooseTurn(turn)
         if (selected == null) { announce("No mapped ${turn} turn is available here. Choose one of the connected roads.", status); return }
-        changed(if (loadedMap?.connectivityVerified == true) "Turned $turn onto ${selected.road.name}. Facing ${e.facing()}."
-            else "Followed the estimated $turn connection onto ${selected.road.name}. The backup does not verify this junction. Facing ${e.facing()}.", status)
+        changed(if (currentVerified && selected.road.nodeIdsVerified) "Turned $turn onto ${selected.road.name}. Facing ${e.facing()}."
+            else "Followed the estimated $turn connection onto ${selected.road.name}. This map does not verify this junction. Facing ${e.facing()}.", status)
     }
 
     private fun chooseConnection(options: List<RoadConnection>) {
-        val map = loadedMap ?: return
+        if (loadedMap == null) return
+        val currentVerified = engine?.road?.nodeIdsVerified == true
         page("Choose Connected Road", "Back to Exploration", ::showExplore) {
-            addText(if (map.connectivityVerified) "Choose one of the roads connected at this junction."
-                else "These possible connections are estimated from shared coordinates in the imported backup.")
-            options.forEach { option -> addButton("${option.road.name}, ${compassName(option.bearingOut)}") {
+            addText(if (currentVerified && options.all { it.road.nodeIdsVerified }) "Choose one of the roads connected at this junction."
+                else "These possible connections include links estimated from shared coordinates.")
+            options.forEach { option -> addButton("${option.road.name}, ${compassName(option.bearingOut)}, ${if (currentVerified && option.road.nodeIdsVerified) "confirmed OSM connection" else "estimated connection"}") {
                 engine?.takeConnection(option)
                 showExplore()
             } }
@@ -870,7 +876,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         return
                     }
                     autoWalking = false
-                    val junctionMessage = if (loadedMap?.connectivityVerified == true) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
+                    val verified = e.road?.nodeIdsVerified == true && connections.all { it.road.nodeIdsVerified }
+                    val junctionMessage = if (verified) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
                     else "Automatic walking paused at a possible junction. ${connections.joinToString { it.road.name }} may connect here based on coordinates."
                     announce(if (connections.isEmpty()) "Automatic walking paused at the road endpoint. No road connection is mapped." else junctionMessage, status)
                     persistSession(); return

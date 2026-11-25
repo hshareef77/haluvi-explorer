@@ -35,7 +35,7 @@ internal fun storedMapMatchesIsland(summary: StoredMapSummary, atoll: AtollEntry
     val atollName = normalizeIslandIdentity(atoll.fullname)
     val atollCode = normalizeIslandIdentity(atoll.code)
     val keyParts = summary.sourceIslandKey.split(':').filter { it.isNotBlank() }
-    if (keyParts.size >= 2 && normalize(keyParts[0]) in setOf(atollCode, atollName)) {
+    if (keyParts.size >= 2 && normalizeIslandIdentity(keyParts[0]) in setOf(atollCode, atollName)) {
         // A navigation backup key such as K:Hulhumale is authoritative and must not fall through to name matching.
         return normalizeIslandIdentity(keyParts[1]) == wanted
     }

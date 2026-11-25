@@ -218,6 +218,19 @@ class ExplorerEngineTest {
         assertEquals("google-place", updated.places.single().id)
     }
 
+    @Test fun networkUpdateRetainsBackupRoadSectionsMissingFromOsm() {
+        val verified = Road("w10", "Mapped Road", "residential", listOf(101, 102),
+            listOf(GeoPoint(4.17, 73.5), GeoPoint(4.17, 73.501)), nodeIdsVerified = true)
+        val olderUnmapped = Road("nav:K:Male:2", "Older Local Road", "user-recorded road", listOf(-201, -202),
+            listOf(GeoPoint(4.18, 73.51), GeoPoint(4.18, 73.511)))
+        val updated = mergeDownloadedNetwork(MapData("Male", 1, listOf(olderUnmapped), emptyList()),
+            MapData("Male", 2, listOf(verified), emptyList(), connectivityVerified = true))
+        assertEquals(2, updated.roads.size)
+        assertTrue(updated.roads.single { it.id == "w10" }.nodeIdsVerified)
+        assertFalse(updated.roads.single { it.id == "nav:K:Male:2" }.nodeIdsVerified)
+        assertFalse(updated.connectivityVerified)
+    }
+
     @Test fun importsRTLBusStopsInsteadOfDiscardingOtherSourceRecords() {
         val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","locations":[{"id":"rtl-1","name":"Bus Stop","lat":4.1751,"lon":73.5107,"source":"rtl","categoryId":"bus","islandKey":"K:Malé","islandName":"Kaafu Malé"}]}"""
         val batch = HaluviBackupImporter.parse(backup)

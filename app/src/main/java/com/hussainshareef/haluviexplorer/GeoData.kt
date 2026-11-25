@@ -35,7 +35,7 @@ data class MapData(
     val roads: List<Road>,
     val places: List<Place>,
     val sourceIslandKey: String = "",
-    val connectivityVerified: Boolean = true
+    val connectivityVerified: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("islandName", islandName)
@@ -72,9 +72,10 @@ data class MapData(
                     val item = array.optJSONObject(i) ?: continue
                     val ids = item.optJSONArray("nodeIds") ?: JSONArray()
                     val points = item.optJSONArray("points") ?: JSONArray()
-                    val nodeIds = (0 until ids.length()).map { ids.optLong(it) }
+                    val storedNodeIds = (0 until ids.length()).map { ids.optLong(it) }
                     val geometry = (0 until points.length()).mapNotNull { j -> points.optJSONObject(j)?.let { GeoPoint(it.optDouble("lat"), it.optDouble("lon")) } }
-                    val nodeIdsVerified = item.optBoolean("nodeIdsVerified", false) && nodeIds.size == geometry.size && nodeIds.all { it > 0L }
+                    val nodeIdsVerified = item.optBoolean("nodeIdsVerified", false) && storedNodeIds.size == geometry.size && storedNodeIds.all { it > 0L }
+                    val nodeIds = if (nodeIdsVerified) storedNodeIds else geometry.map(::coordinateNodeId)
                     add(Road(item.optString("id"), item.optString("name", "Unnamed road"), item.optString("kind"),
                         nodeIds, geometry, nodeIdsVerified))
                 }
@@ -87,7 +88,7 @@ data class MapData(
                         GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified"), item.optString("source")))
                 }
             }
-            val verified = json.optBoolean("connectivityVerified", true) && roads.isNotEmpty() && roads.all { it.nodeIdsVerified }
+            val verified = json.optBoolean("connectivityVerified", false) && roads.isNotEmpty() && roads.all { it.nodeIdsVerified }
             return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places,
                 json.optString("sourceIslandKey"), verified)
         }
