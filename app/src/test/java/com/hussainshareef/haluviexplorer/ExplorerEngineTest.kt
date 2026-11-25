@@ -105,7 +105,8 @@ class ExplorerEngineTest {
         assertTrue(restored.roads.all { it.nodeIdsVerified })
         val engine = ExplorerEngine(map)
         val first = map.roads.single { it.name == "First Road" }
-        engine.start(first, first.lengthMeters)
+        engine.start(first, 0.0)
+        engine.move(first.lengthMeters)
         assertEquals("Second Road", engine.connections().single().road.name)
     }
 
