@@ -113,7 +113,7 @@ object HaluviBackupImporter {
     private fun nodeId(point: GeoPoint): Long {
         val lat = (point.lat * 10_000_000).roundToLong().toInt()
         val lon = (point.lon * 10_000_000).roundToLong().toInt()
-        return (lat.toLong() shl 32) xor (lon.toLong() and 0xffffffffL)
+        return ((lat.toLong() shl 32) xor (lon.toLong() and 0xffffffffL)) or Long.MIN_VALUE
     }
 
     private fun sameLine(a: List<GeoPoint>, b: List<GeoPoint>): Boolean {

@@ -95,6 +95,20 @@ class ExplorerEngineTest {
         assertEquals("Island Pharmacy", map.places.single().name)
     }
 
+    @Test fun bodyGeometryNodeIdsConfirmJunctionConnectivity() {
+        val roadJson = """{"elements":[{"type":"way","id":41,"nodes":[1001,1002],"tags":{"highway":"residential","name":"First Road"},"geometry":[{"lat":4.17,"lon":73.5},{"lat":4.17,"lon":73.501}]},{"type":"way","id":42,"nodes":[1002,1003],"tags":{"highway":"residential","name":"Second Road"},"geometry":[{"lat":4.17,"lon":73.501},{"lat":4.171,"lon":73.501}]}]}"""
+        val map = MapData.fromOverpassParts("Malé", roadJson, """{"elements":[]}""")
+        assertTrue(map.connectivityVerified)
+        assertTrue(map.roads.all { it.nodeIdsVerified })
+        val restored = MapData.fromJson(map.toJson())
+        assertTrue(restored.connectivityVerified)
+        assertTrue(restored.roads.all { it.nodeIdsVerified })
+        val engine = ExplorerEngine(map)
+        val first = map.roads.single { it.name == "First Road" }
+        engine.start(first, first.lengthMeters)
+        assertEquals("Second Road", engine.connections().single().road.name)
+    }
+
     @Test fun bundledAtollSnapshotIsParsedAndLimitedToSelectedIslandBounds() {
         val snapshot = """{"date":"2026-11-19","roads":[{"tags":{"highway":"residential","name":"Inside Road"},"geometry":[{"lat":1.0,"lon":1.0},{"lat":1.0,"lon":1.001}]},{"tags":{"highway":"residential","name":"Outside Road"},"geometry":[{"lat":2.0,"lon":2.0},{"lat":2.0,"lon":2.001}]}],"places":[{"lat":1.0,"lon":1.0,"tags":{"amenity":"pharmacy","name":"Island Pharmacy"}},{"lat":2.0,"lon":2.0,"tags":{"amenity":"school","name":"Other Island School"}}]}"""
         val map = MapData.fromNavigationAtoll("K", "Kaafu", snapshot, 0.99, 0.99, 1.01, 1.01)
@@ -157,6 +171,8 @@ class ExplorerEngineTest {
         val map = MapData.fromOverpass("Malé", response)
         assertEquals("Mapped Lane", map.roads.single().name)
         assertEquals(2, map.roads.single().nodeIds.size)
+        assertFalse(map.connectivityVerified)
+        assertFalse(map.roads.single().nodeIdsVerified)
     }
 
     @Test fun importsNavigationRoadsAndAllPlaceSourcesIncludingGoogle() {
@@ -187,6 +203,19 @@ class ExplorerEngineTest {
         val merged = mergePlacesPreservingSources(listOf(osm), listOf(google, google))
         assertEquals(2, merged.size)
         assertEquals(setOf("osm_map", "google"), merged.map { it.source }.toSet())
+    }
+
+    @Test fun freshNodeAwareNetworkReplacesEstimatedRoadsAndKeepsImportedPlaces() {
+        val points = listOf(GeoPoint(4.17, 73.5), GeoPoint(4.17, 73.501))
+        val importedRoad = Road("nav:K:Male:0", "Main Road", "residential", listOf(-10, -11), points)
+        val networkRoad = Road("w41", "Main Road", "residential", listOf(1001, 1002), points, nodeIdsVerified = true)
+        val google = Place("google-place", "Local Shop", "shop", points.first(), false, "google")
+        val oldMap = MapData("Kaafu Male'", 1, listOf(importedRoad), listOf(google), "K:Male'", false)
+        val network = MapData("Kaafu Male'", 2, listOf(networkRoad), emptyList(), "K:Male", true)
+        val updated = mergeDownloadedNetwork(oldMap, network)
+        assertTrue(updated.connectivityVerified)
+        assertEquals(listOf("w41"), updated.roads.map { it.id })
+        assertEquals("google-place", updated.places.single().id)
     }
 
     @Test fun importsRTLBusStopsInsteadOfDiscardingOtherSourceRecords() {

@@ -11,7 +11,9 @@ data class Road(
     val name: String,
     val kind: String,
     val nodeIds: List<Long>,
-    val points: List<GeoPoint>
+    val points: List<GeoPoint>,
+    /** True only when nodeIds came from the source map's actual OSM way-node list. */
+    val nodeIdsVerified: Boolean = false
 ) {
     val lengthMeters: Double by lazy { polylineLength(points) }
     val startNode: Long? get() = nodeIds.firstOrNull()
@@ -43,6 +45,7 @@ data class MapData(
         put("roads", JSONArray().apply {
             roads.forEach { road -> put(JSONObject().apply {
                 put("id", road.id); put("name", road.name); put("kind", road.kind)
+                put("nodeIdsVerified", road.nodeIdsVerified)
                 put("nodeIds", JSONArray().apply { road.nodeIds.forEach { put(it) } })
                 put("points", JSONArray().apply { road.points.forEach { p -> put(JSONObject().apply { put("lat", p.lat); put("lon", p.lon) }) } })
             }) }
@@ -69,9 +72,11 @@ data class MapData(
                     val item = array.optJSONObject(i) ?: continue
                     val ids = item.optJSONArray("nodeIds") ?: JSONArray()
                     val points = item.optJSONArray("points") ?: JSONArray()
+                    val nodeIds = (0 until ids.length()).map { ids.optLong(it) }
+                    val geometry = (0 until points.length()).mapNotNull { j -> points.optJSONObject(j)?.let { GeoPoint(it.optDouble("lat"), it.optDouble("lon")) } }
+                    val nodeIdsVerified = item.optBoolean("nodeIdsVerified", false) && nodeIds.size == geometry.size && nodeIds.all { it > 0L }
                     add(Road(item.optString("id"), item.optString("name", "Unnamed road"), item.optString("kind"),
-                        (0 until ids.length()).map { ids.optLong(it) },
-                        (0 until points.length()).mapNotNull { j -> points.optJSONObject(j)?.let { GeoPoint(it.optDouble("lat"), it.optDouble("lon")) } }))
+                        nodeIds, geometry, nodeIdsVerified))
                 }
             }.filter { it.points.size >= 2 && it.lengthMeters > 0.5 }
             val places = buildList {
@@ -82,8 +87,9 @@ data class MapData(
                         GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified"), item.optString("source")))
                 }
             }
+            val verified = json.optBoolean("connectivityVerified", true) && roads.isNotEmpty() && roads.all { it.nodeIdsVerified }
             return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places,
-                json.optString("sourceIslandKey"), json.optBoolean("connectivityVerified", true))
+                json.optString("sourceIslandKey"), verified)
         }
 
         fun fromOverpass(islandName: String, response: String): MapData {
@@ -91,6 +97,7 @@ data class MapData(
             val elements = root.optJSONArray("elements") ?: JSONArray()
             val roads = mutableListOf<Road>()
             val places = linkedMapOf<String, Place>()
+            var allRoadsHaveOsmNodeIds = true
             for (i in 0 until elements.length()) {
                 val e = elements.optJSONObject(i) ?: continue
                 val tags = e.optJSONObject("tags") ?: JSONObject()
@@ -100,10 +107,13 @@ data class MapData(
                     val geometry = e.optJSONArray("geometry") ?: JSONArray()
                     val pointList = (0 until geometry.length()).mapNotNull { j -> geometry.optJSONObject(j)?.let { GeoPoint(it.optDouble("lat"), it.optDouble("lon")) } }
                     val nodeArray = e.optJSONArray("nodes") ?: JSONArray()
-                    val nodeIds = if (nodeArray.length() == pointList.size) (0 until nodeArray.length()).map { nodeArray.optLong(it) }
+                    val hasOsmNodeIds = nodeArray.length() == pointList.size && (0 until nodeArray.length()).all { nodeArray.optLong(it) > 0L }
+                    val nodeIds = if (hasOsmNodeIds) (0 until nodeArray.length()).map { nodeArray.optLong(it) }
                         else pointList.map(::coordinateNodeId)
                     if (pointList.size >= 2) {
-                        roads += Road("w$id", tags.optString("name", tags.optString("ref", "Unnamed road")), tags.optString("highway"), nodeIds, pointList)
+                        roads += Road("w$id", tags.optString("name:en").ifBlank { tags.optString("name", tags.optString("ref", "Unnamed road")) },
+                            tags.optString("highway"), nodeIds, pointList, hasOsmNodeIds)
+                        allRoadsHaveOsmNodeIds = allRoadsHaveOsmNodeIds && hasOsmNodeIds
                     }
                 }
                 if (placeKeys.any { tags.has(it) }) {
@@ -120,7 +130,8 @@ data class MapData(
                     places[place.id] = place
                 }
             }
-            return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList())
+            return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList(),
+                connectivityVerified = roads.isNotEmpty() && allRoadsHaveOsmNodeIds)
         }
 
         /** Joins the smaller road-only and place-only Overpass responses without issuing one oversized query. */
@@ -189,7 +200,8 @@ data class MapData(
 private fun coordinateNodeId(point: GeoPoint): Long {
     val lat = (point.lat * 10_000_000).roundToLong().toInt()
     val lon = (point.lon * 10_000_000).roundToLong().toInt()
-    return (lat.toLong() shl 32) xor (lon.toLong() and 0xffffffffL)
+    // Synthetic coordinate IDs stay negative so they cannot collide with positive OSM node IDs.
+    return ((lat.toLong() shl 32) xor (lon.toLong() and 0xffffffffL)) or Long.MIN_VALUE
 }
 
 /** Splits ways at shared network vertices so a junction inside a long curved way becomes a usable endpoint. */

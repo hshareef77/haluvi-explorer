@@ -18,7 +18,7 @@ Haluvi Explorer is an experimental native Android application for blind and visu
 
 Island searches use OpenStreetMap's Nominatim service. A map is downloaded only after the user selects a search result. Road and place data are stored locally as JSON map files in the app's private files and are available offline after download. The app does not request GPS or location permission.
 
-Map and place coverage depend on volunteer mapping. A nearby place coordinate is not proof that an entrance faces a road. Freshly downloaded maps use shared road-node IDs for junctions. Imported backups omit those IDs, so their junctions are estimates from identical coordinate vertices; arbitrary line crossings are not treated as connections. The app does not provide real-world pedestrian safety directions.
+Map and place coverage depend on volunteer mapping. A nearby place coordinate is not proof that an entrance faces a road. Online map updates request each way's actual OSM node list and geometry, then replace estimated OSM road sections while keeping saved places and user-defined roads. Imported backups and bundled atoll snapshots omit node IDs, so their remaining junctions are estimates from identical coordinate vertices; arbitrary line crossings are not treated as connections. The app does not provide real-world pedestrian safety directions.
 
 Haluvi Navigation backup exports include per-island road geometry, place records and user road names. The importer preserves valid saved place sources, including Google Places entries, locally on the device. The backup format omits OpenStreetMap node IDs, so imported junctions are inferred from shared coordinate vertices and are marked as estimates in Explorer.
 

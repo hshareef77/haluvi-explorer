@@ -157,6 +157,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         page("Download and Manage Maps", "Back to Main Menu", ::showHome) {
             val generation = screenGeneration
             addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
+            addText("For confirmed junctions, update a saved island map while online. Explorer requests OSM way-node IDs and keeps your saved places. Imported backups and bundled atoll snapshots do not contain those IDs, so their links remain estimates.", 15f)
             addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
             addButton("Choose Atoll and Island") { chooseAtoll() }
             addButton("Search Island by Name") { searchIsland() }
@@ -174,6 +175,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun renderMapManager(summaries: List<StoredMapSummary>) {
         page("Download and Manage Maps", "Back to Main Menu", ::showHome) {
             addText("Map downloads need an internet connection. Once saved, the road network and places work offline.")
+            addText("For confirmed junctions, update a saved island map while online. Explorer requests OSM way-node IDs and keeps your saved places. Imported backups and bundled atoll snapshots do not contain those IDs, so their links remain estimates.", 15f)
             addText("OpenStreetMap data is shown with source attribution. Map coverage varies by island.", 15f)
             addButton("Choose Atoll and Island") { chooseAtoll() }
             addButton("Search Island by Name") { searchIsland() }
@@ -188,7 +190,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 addText("${summary.islandName}. ${summary.roadCount} road sections, ${summary.placeCount} mapped places, ${summary.length / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(summary.downloadedAt))}.")
                 addButton("Explore ${summary.islandName}") { openSavedMap(summary, false, "Back to Map Management", ::showMapManager) }
                 addButton("Explore places on ${summary.islandName}") { openSavedMap(summary, true, "Back to Map Management", ::showMapManager) }
-                addButton("Update ${summary.islandName}") { searchIsland(summary.islandName.substringBefore(",")) }
+                addButton("Update ${summary.islandName}") { updateSavedIslandMap(summary) }
                 addButton("Delete map for ${summary.islandName}") {
                     AlertDialog.Builder(this@MainActivity).setTitle("Delete island map?")
                         .setMessage("Delete the saved offline map for ${summary.islandName} from this phone?")
@@ -198,6 +200,17 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }
             addButton("OpenStreetMap attribution") { showAttribution() }
         }
+    }
+
+    private fun updateSavedIslandMap(summary: StoredMapSummary) {
+        val atolls = runCatching { IslandCatalog.load(this) }.getOrNull().orEmpty()
+        val match = atolls.firstNotNullOfOrNull { atoll ->
+            atoll.islands.firstOrNull { storedMapMatchesIsland(summary, atoll, it) }?.let { atoll to it }
+        }
+        if (match != null) {
+            val (atoll, island) = match
+            searchIsland("${island.name}, ${atoll.fullname}", island, atoll)
+        } else searchIsland(summary.islandName.substringBefore(","))
     }
 
     private fun openSavedMap(summary: StoredMapSummary, forPlaces: Boolean, backLabel: String, back: () -> Unit) {
@@ -254,8 +267,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         page("${map.islandName} Map Overview", "Back to Map Management", ::showMapManager) {
             addText("${map.islandName} map is saved on this phone and available offline.")
             addText("${map.roads.size} mapped roads, ${map.places.size} mapped places, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
-            addText("This map comes from OpenStreetMap. Coverage and positional accuracy depend on available community mapping.")
-            if (!map.connectivityVerified) addText("Road connections in this imported backup are inferred from identical coordinate points because the backup omits OpenStreetMap node IDs. Treat those junctions as estimates.")
+            addText("Road geometry comes from OpenStreetMap. Saved place entries retain their original sources; coverage and positional accuracy depend on each source.")
+            if (!map.connectivityVerified) addText("Some road sections lack OpenStreetMap node IDs. Connections for those sections are estimated from identical coordinates and are not confirmed junctions.")
             addButton("Explore Roads") { chooseRoad() }
             addButton("Explore Places") { showPlaceList() }
             addButton("Back to Main Menu") { showHome() }
@@ -381,17 +394,21 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 status.text = detail.text
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 dialog.setCancelable(false)
-                val named = map.copy(islandName = area.displayName)
+                val islandKey = area.atollCode.takeIf { it.isNotBlank() }?.let { "$it:${area.shortName}" }.orEmpty()
+                val named = map.copy(islandName = area.displayName, sourceIslandKey = islandKey)
                 Thread {
-                    val saved = runCatching { store.save(named) }
+                    val saved = runCatching { store.updateWithNetwork(area, named) }
                     mainHandler.post {
                         if (saved.isSuccess) {
-                            loadedMap = named; loadedFile = saved.getOrThrow()
+                            val (savedFile, savedMap) = saved.getOrThrow()
+                            loadedMap = savedMap; loadedFile = savedFile
                             dialog.dismiss(); activeDownloadDialog = null
-                            val sourceNote = if (named.sourceIslandKey.startsWith("builtin:"))
-                                " Online service was unavailable, so the bundled atoll OpenStreetMap snapshot dated ${named.sourceIslandKey.substringAfterLast(":")} was used."
+                            val sourceNote = if (map.sourceIslandKey.startsWith("builtin:"))
+                                " Online service was unavailable, so the bundled atoll OpenStreetMap snapshot dated ${map.sourceIslandKey.substringAfterLast(":")} was used."
                             else ""
-                            announce("Map ready. ${area.shortName} is saved offline with ${named.roads.size} road sections and ${named.places.size} places.$sourceNote", status)
+                            val accuracyNote = if (savedMap.connectivityVerified) " Road connections use OSM node IDs from the downloaded data."
+                                else " Some connections remain estimates because this map source did not include OSM node IDs."
+                            announce("Map ready. ${area.shortName} is saved offline with ${savedMap.roads.size} road sections and ${savedMap.places.size} places.$sourceNote$accuracyNote", status)
                             showMapOverview()
                         } else {
                             detail.text = "Could not save this map: ${saved.exceptionOrNull()?.message ?: "storage error"}. You can retry."
@@ -649,7 +666,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         page("Exploration", "Back to ${map.islandName} Roads", { chooseRoad() }) {
             val current = e.road
             addText("Island: ${map.islandName}. Road: ${current?.name ?: "none"}.")
-            if (!map.connectivityVerified) addText("This imported backup does not include OSM node IDs. Possible road connections are estimated from identical coordinates.")
+            if (!map.connectivityVerified) addText("Some road sections lack OSM node IDs. Possible connections between those sections are estimated from identical coordinates.")
             val live = addStatus(e.whereAmI())
             val pos = e.position()
             addText(pos?.let { "Current virtual position: ${"%.6f".format(Locale.US, it.lat)}, ${"%.6f".format(Locale.US, it.lon)}." }.orEmpty())

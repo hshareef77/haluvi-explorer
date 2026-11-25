@@ -23,6 +23,25 @@ class MapStore(context: Context) {
         }
         return file
     }
+
+    /** Replaces old estimated OSM roads with a node-aware download while preserving saved places and custom roads. */
+    @Synchronized fun updateWithNetwork(area: IslandArea, network: MapData): Pair<File, MapData> {
+        val previous = summaries()
+        val atoll = AtollEntry(area.atollCode, area.atollName, emptyList())
+        val island = IslandEntry(area.shortName, 0.0, 0.0)
+        val networkKey = normalizeIslandIdentity(network.sourceIslandKey)
+        val existing = previous.firstOrNull { summary ->
+            (networkKey.isNotBlank() && normalizeIslandIdentity(summary.sourceIslandKey) == networkKey) ||
+                storedMapMatchesIsland(summary, atoll, island)
+        }
+        val oldMap = existing?.let { runCatching { load(it.file) }.getOrNull() }
+        val merged = mergeDownloadedNetwork(oldMap, network)
+        val target = existing?.file ?: File(directory, "${merged.saveName()}.json")
+        target.writeText(merged.toJson().toString())
+        cachedSummaries = (previous.filterNot { it.file.name == target.name } + summary(target, merged)).sortedBy { it.file.name }
+        writeIndex(cachedSummaries!!)
+        return target to merged
+    }
     fun load(file: File): MapData = MapData.fromJson(JSONObject(file.readText()))
     fun all(): List<File> = directory.listFiles { file -> file.isFile && file.extension == "json" }?.sortedBy { it.nameWithoutExtension } ?: emptyList()
     @Synchronized fun summaries(): List<StoredMapSummary> {
@@ -49,33 +68,30 @@ class MapStore(context: Context) {
         var placesAdded = 0
         var mapsProcessed = 0
         val previousSummaries = summaries()
-        val existing = previousSummaries.associateBy { it.sourceIslandKey }
+        val existing = previousSummaries.associateBy { normalizeIslandIdentity(it.sourceIslandKey) }
         val replacements = linkedMapOf<String, StoredMapSummary>()
         for (incoming in batch.maps) {
-            val existingRecord = existing[incoming.sourceIslandKey]
+            val existingRecord = existing[normalizeIslandIdentity(incoming.sourceIslandKey)]
             val existingFile = existingRecord?.file
             val oldMap = existingFile?.let { runCatching { load(it) }.getOrNull() }
             val oldRoads = oldMap?.roads.orEmpty()
             val oldPlaces = oldMap?.places.orEmpty()
-            val roads = (oldRoads + incoming.roads).distinctBy { "${it.name.trim().lowercase()}|${geometryKey(it.points)}" }
+            // Keep downloaded OSM geometry first: an identical backup line must not replace its real node IDs.
+            val roads = (oldRoads + incoming.roads).distinctBy { roadGeometryKey(it.points) }
             val places = mergePlacesPreservingSources(oldPlaces, incoming.places)
             roadsAdded += roads.size - oldRoads.size
             placesAdded += places.size - oldPlaces.size
             val merged = MapData(incoming.islandName, maxOf(oldMap?.downloadedAt ?: 0L, incoming.downloadedAt), roads, places,
-                incoming.sourceIslandKey, (oldMap?.connectivityVerified ?: true) && incoming.connectivityVerified)
+                incoming.sourceIslandKey, roads.isNotEmpty() && roads.all { it.nodeIdsVerified })
             val target = existingFile ?: File(directory, "${merged.saveName()}.json")
             target.writeText(merged.toJson().toString())
             replacements[incoming.sourceIslandKey] = summary(target, merged)
             mapsProcessed++
         }
-        cachedSummaries = (previousSummaries.filterNot { it.sourceIslandKey in replacements.keys } + replacements.values).sortedBy { it.file.name }
+        val replacementKeys = replacements.keys.map(::normalizeIslandIdentity).toSet()
+        cachedSummaries = (previousSummaries.filterNot { normalizeIslandIdentity(it.sourceIslandKey) in replacementKeys } + replacements.values).sortedBy { it.file.name }
         writeIndex(cachedSummaries!!)
         return MapImportSummary(mapsProcessed, roadsAdded, placesAdded, batch.unsupportedPlacesSkipped)
-    }
-
-    private fun geometryKey(points: List<GeoPoint>): String {
-        fun encode(list: List<GeoPoint>) = list.joinToString(";") { "${(it.lat * 1e7).toLong()},${(it.lon * 1e7).toLong()}" }
-        return minOf(encode(points), encode(points.reversed()))
     }
 
     private fun summary(file: File, map: MapData) = StoredMapSummary(file, map.islandName, map.sourceIslandKey,
@@ -121,4 +137,17 @@ internal fun mergePlacesPreservingSources(existing: List<Place>, incoming: List<
         if (!duplicate) merged.add(place)
     }
     return merged
+}
+
+internal fun mergeDownloadedNetwork(existing: MapData?, network: MapData): MapData {
+    val customRoads = existing?.roads.orEmpty().filter { it.id.startsWith("user:") }
+    val roads = (network.roads + customRoads).distinctBy { roadGeometryKey(it.points) }
+    val places = mergePlacesPreservingSources(existing?.places.orEmpty(), network.places)
+    return network.copy(roads = roads, places = places,
+        connectivityVerified = roads.isNotEmpty() && roads.all { it.nodeIdsVerified })
+}
+
+internal fun roadGeometryKey(points: List<GeoPoint>): String {
+    fun encode(list: List<GeoPoint>) = list.joinToString(";") { "${(it.lat * 1e7).toLong()},${(it.lon * 1e7).toLong()}" }
+    return minOf(encode(points), encode(points.reversed()))
 }

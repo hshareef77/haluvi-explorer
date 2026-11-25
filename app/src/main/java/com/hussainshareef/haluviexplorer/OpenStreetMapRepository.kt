@@ -166,7 +166,7 @@ class OpenStreetMapRepository(context: Context) {
         val roadQuery = """
             [out:json][timeout:30];
             way[highway~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian|footway|path|track|road|steps|cycleway|bridleway)$"]($box);
-            out geom tags;
+            out body geom;
         """.trimIndent()
         val placeQuery = """
             [out:json][timeout:30];

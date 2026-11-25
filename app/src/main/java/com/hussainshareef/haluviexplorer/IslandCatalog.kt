@@ -26,23 +26,24 @@ object IslandCatalog {
     }
 }
 
+internal fun normalizeIslandIdentity(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
+    .replace(Regex("\\p{M}+"), "").lowercase().filter { it.isLetterOrDigit() }
+
 /** Matches saved maps by island identity, never by a partial substring (e.g. Male inside Hulhumale). */
 internal fun storedMapMatchesIsland(summary: StoredMapSummary, atoll: AtollEntry, island: IslandEntry): Boolean {
-    fun normalize(value: String) = Normalizer.normalize(value, Normalizer.Form.NFD)
-        .replace(Regex("\\p{M}+"), "").lowercase().filter { it.isLetterOrDigit() }
-    val wanted = normalize(island.name)
-    val atollName = normalize(atoll.fullname)
-    val atollCode = normalize(atoll.code)
+    val wanted = normalizeIslandIdentity(island.name)
+    val atollName = normalizeIslandIdentity(atoll.fullname)
+    val atollCode = normalizeIslandIdentity(atoll.code)
     val keyParts = summary.sourceIslandKey.split(':').filter { it.isNotBlank() }
     if (keyParts.size >= 2 && normalize(keyParts[0]) in setOf(atollCode, atollName)) {
         // A navigation backup key such as K:Hulhumale is authoritative and must not fall through to name matching.
-        return normalize(keyParts[1]) == wanted
+        return normalizeIslandIdentity(keyParts[1]) == wanted
     }
     val labels = buildList {
         add(summary.islandName.substringBefore('(').trim())
         addAll(summary.islandName.substringBefore('(').split(',', ';'))
         add(summary.file.nameWithoutExtension)
-    }.map(::normalize)
+    }.map(::normalizeIslandIdentity)
     return labels.any { label ->
         label == wanted ||
             label.removePrefix(atollCode) == wanted ||
