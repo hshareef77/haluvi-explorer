@@ -65,7 +65,6 @@ object HaluviBackupImporter {
             val item = placeRecords.optJSONObject(i) ?: continue
             val source = item.optString("source", "manual").ifBlank { "manual" }
             if (source.equals("google", ignoreCase = true)) { googleSkipped++; continue }
-            if (source !in setOf("manual", "osm_map", "osm_search")) { unsupportedSkipped++; continue }
             val islandName = item.optString("islandName").trim()
             val key = item.optString("islandKey").ifBlank {
                 islandName.takeIf { it.isNotBlank() }?.let { "imported:$it" } ?: "imported-unassigned"
