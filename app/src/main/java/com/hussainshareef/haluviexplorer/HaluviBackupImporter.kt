@@ -6,7 +6,6 @@ import kotlin.math.roundToLong
 
 data class BackupImportBatch(
     val maps: List<MapData>,
-    val googlePlacesSkipped: Int,
     val unsupportedPlacesSkipped: Int
 )
 
@@ -57,14 +56,12 @@ object HaluviBackupImporter {
             }
         }
 
-        var googleSkipped = 0
         var unsupportedSkipped = 0
         val placesByIsland = linkedMapOf<String, MutableList<Place>>()
         val placeRecords = root.optJSONArray("locations") ?: JSONArray()
         for (i in 0 until placeRecords.length()) {
             val item = placeRecords.optJSONObject(i) ?: continue
             val source = item.optString("source", "manual").ifBlank { "manual" }
-            if (source.equals("google", ignoreCase = true)) { googleSkipped++; continue }
             val islandName = item.optString("islandName").trim()
             val key = item.optString("islandKey").ifBlank {
                 islandName.takeIf { it.isNotBlank() }?.let { "imported:$it" } ?: "imported-unassigned"
@@ -92,7 +89,7 @@ object HaluviBackupImporter {
             )
         }.filter { it.roads.isNotEmpty() || it.places.isNotEmpty() }
         require(maps.isNotEmpty()) { "No reusable road or place data was found in this backup." }
-        return BackupImportBatch(maps, googleSkipped, unsupportedSkipped)
+        return BackupImportBatch(maps, unsupportedSkipped)
     }
 
     private fun parseCoordinatePairs(array: JSONArray?): List<GeoPoint>? {

@@ -161,7 +161,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addButton("Choose Atoll and Island") { chooseAtoll() }
             addButton("Search Island by Name") { searchIsland() }
             addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
-            addText("Backup import brings in road and place records from other sources, including user and RTL entries. Google Places records stay in your original backup because Google does not allow Places API content to be combined with a non-Google map or kept as permanent offline coordinates.", 15f)
+            addText("Backup import keeps valid saved roads and places on this phone, including Google Places entries. Place source labels are preserved.", 15f)
             addText("Reading saved map summaries…", live = true)
             addButton("OpenStreetMap attribution") { showAttribution() }
             Thread {
@@ -178,7 +178,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addButton("Choose Atoll and Island") { chooseAtoll() }
             addButton("Search Island by Name") { searchIsland() }
             addButton("Import Haluvi Navigation Backup or Shared Map") { chooseBackupFile() }
-            addText("Backup import brings in road and place records from other sources, including user and RTL entries. Google Places records stay in your original backup because Google does not allow Places API content to be combined with a non-Google map or kept as permanent offline coordinates.", 15f)
+            addText("Backup import keeps valid saved roads and places on this phone, including Google Places entries. Place source labels are preserved.", 15f)
             val roads = summaries.sumOf { it.roadCount }
             val places = summaries.sumOf { it.placeCount }
             addText("${summaries.size} islands have an offline map. $roads road sections and $places places saved.", 19f, live = true)
@@ -237,9 +237,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
                 mainHandler.post {
                     result.onSuccess { report ->
-                        status.text = "Import complete. ${report.mapsProcessed} island maps checked, ${report.roadsAdded} roads and ${report.placesAdded} places added. " +
-                            (if (report.googlePlacesSkipped > 0) "${report.googlePlacesSkipped} Google Places records remain in your original backup. " else "") +
-                            (if (report.unsupportedPlacesSkipped > 0) "${report.unsupportedPlacesSkipped} entries without usable names or coordinates could not be added." else "")
+                        status.text = "Import complete. ${report.mapsProcessed} island maps checked, ${report.roadsAdded} roads and ${report.placesAdded} places added, including saved Google Places entries. " +
+                            (if (report.unsupportedPlacesSkipped > 0) "${report.unsupportedPlacesSkipped} entries without usable names or coordinates could not be added." else "All place entries with valid names and coordinates were imported.")
                         announce(status.text.toString(), status)
                     }.onFailure {
                         status.text = "Import failed. Choose a Haluvi Navigation backup or shared map JSON file. ${it.message ?: ""}"

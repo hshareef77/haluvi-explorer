@@ -146,7 +146,7 @@ class ExplorerEngineTest {
         assertEquals(2, map.roads.single().nodeIds.size)
     }
 
-    @Test fun importsNavigationSharedMapRoadsAndNonGooglePlacesOnly() {
+    @Test fun importsNavigationRoadsAndAllPlaceSourcesIncludingGoogle() {
         val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17515,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17516,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
         val batch = HaluviBackupImporter.parse(backup)
         assertEquals(1, batch.maps.size)
@@ -155,12 +155,14 @@ class ExplorerEngineTest {
         assertEquals("Kaafu Malé", map.islandName)
         assertEquals(2, map.roads.size)
         assertTrue(map.roads.any { it.name == "Majeedhee Magu" })
-        assertEquals("left", ExplorerEngine(map).also { it.start(map.roads.first(), map.roads.first().lengthMeters / 2) }
-            .nearbyPlaces(50.0).single().side)
-        assertEquals(1, map.places.size)
-        assertEquals("osm-1", map.places.single().id)
-        assertFalse(map.places.single().entranceVerified)
-        assertEquals(1, batch.googlePlacesSkipped)
+        val nearby = ExplorerEngine(map).also { it.start(map.roads.first(), map.roads.first().lengthMeters / 2) }.nearbyPlaces(50.0)
+        assertEquals("left", nearby.single { it.place.id == "osm-1" }.side)
+        assertEquals(2, map.places.size)
+        assertEquals("osm-1", map.places.first { it.source == "osm_map" }.id)
+        val google = map.places.single { it.source == "google" }
+        assertEquals("google-1", google.id)
+        assertEquals("Google Place", google.name)
+        assertFalse(google.entranceVerified)
         assertEquals(0, batch.unsupportedPlacesSkipped)
         assertFalse(map.connectivityVerified)
     }

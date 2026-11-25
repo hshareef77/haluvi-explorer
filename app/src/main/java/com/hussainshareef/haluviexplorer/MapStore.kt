@@ -73,7 +73,7 @@ class MapStore(context: Context) {
         }
         cachedSummaries = (previousSummaries.filterNot { it.sourceIslandKey in replacements.keys } + replacements.values).sortedBy { it.file.name }
         writeIndex(cachedSummaries!!)
-        return MapImportSummary(mapsProcessed, roadsAdded, placesAdded, batch.googlePlacesSkipped, batch.unsupportedPlacesSkipped)
+        return MapImportSummary(mapsProcessed, roadsAdded, placesAdded, batch.unsupportedPlacesSkipped)
     }
 
     private fun geometryKey(points: List<GeoPoint>): String {
@@ -113,4 +113,4 @@ class MapStore(context: Context) {
 }
 
 data class MapImportSummary(val mapsProcessed: Int, val roadsAdded: Int, val placesAdded: Int,
-    val googlePlacesSkipped: Int, val unsupportedPlacesSkipped: Int)
+    val unsupportedPlacesSkipped: Int)

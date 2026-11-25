@@ -20,7 +20,7 @@ Island searches use OpenStreetMap's Nominatim service. A map is downloaded only 
 
 Map and place coverage depend on volunteer mapping. A nearby place coordinate is not proof that an entrance faces a road. Freshly downloaded maps use shared road-node IDs for junctions. Imported backups omit those IDs, so their junctions are estimates from identical coordinate vertices; arbitrary line crossings are not treated as connections. The app does not provide real-world pedestrian safety directions.
 
-Haluvi Navigation backup exports include per-island road geometry, place records and user road names. The backup format omits OpenStreetMap node IDs, so imported junctions are inferred from shared coordinate vertices and are marked as estimates in Explorer. Full backups may include Google Places records; Explorer skips Google-sourced places to avoid reusing Google data as offline map content. Use a shared map export for data that may be reused with others.
+Haluvi Navigation backup exports include per-island road geometry, place records and user road names. The importer preserves valid saved place sources, including Google Places entries, locally on the device. The backup format omits OpenStreetMap node IDs, so imported junctions are inferred from shared coordinate vertices and are marked as estimates in Explorer.
 
 Map data © OpenStreetMap contributors, available under the Open Database License (ODbL): <https://www.openstreetmap.org/copyright>.
 
