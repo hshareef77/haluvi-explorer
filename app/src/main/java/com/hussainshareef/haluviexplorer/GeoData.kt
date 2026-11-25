@@ -13,7 +13,9 @@ data class Road(
     val nodeIds: List<Long>,
     val points: List<GeoPoint>,
     /** True only when nodeIds came from the source map's actual OSM way-node list. */
-    val nodeIdsVerified: Boolean = false
+    val nodeIdsVerified: Boolean = false,
+    /** One linear, connected named street path assembled from several OSM geometry sections. */
+    val continuousPath: Boolean = false
 ) {
     val lengthMeters: Double by lazy { polylineLength(points) }
     val startNode: Long? get() = nodeIds.firstOrNull()
@@ -46,6 +48,7 @@ data class MapData(
             roads.forEach { road -> put(JSONObject().apply {
                 put("id", road.id); put("name", road.name); put("kind", road.kind)
                 put("nodeIdsVerified", road.nodeIdsVerified)
+                put("continuousPath", road.continuousPath)
                 put("nodeIds", JSONArray().apply { road.nodeIds.forEach { put(it) } })
                 put("points", JSONArray().apply { road.points.forEach { p -> put(JSONObject().apply { put("lat", p.lat); put("lon", p.lon) }) } })
             }) }
@@ -77,7 +80,7 @@ data class MapData(
                     val nodeIdsVerified = item.optBoolean("nodeIdsVerified", false) && storedNodeIds.size == geometry.size && storedNodeIds.all { it > 0L }
                     val nodeIds = if (nodeIdsVerified) storedNodeIds else geometry.map(::coordinateNodeId)
                     add(Road(item.optString("id"), item.optString("name", "Unnamed road"), item.optString("kind"),
-                        nodeIds, geometry, nodeIdsVerified))
+                        nodeIds, geometry, nodeIdsVerified, item.optBoolean("continuousPath", false)))
                 }
             }.filter { it.points.size >= 2 && it.lengthMeters > 0.5 }
             val places = buildList {
@@ -236,6 +239,95 @@ fun groupRoadsByName(roads: List<Road>, filter: String = ""): List<Pair<String, 
         .filterKeys { it.contains(filter, ignoreCase = true) }
         .toList()
         .sortedBy { it.first.lowercase() }
+
+/** Combines connected, linear sections of one named street while preserving every network node. */
+fun continuousNamedRoadPaths(sections: List<Road>): List<Road> {
+    if (sections.size < 2) return sections
+    val incident = linkedMapOf<Long, MutableList<Int>>()
+    sections.forEachIndexed { index, section ->
+        val a = section.startNode ?: return@forEachIndexed
+        val b = section.endNode ?: return@forEachIndexed
+        incident.getOrPut(a) { mutableListOf() }.add(index)
+        incident.getOrPut(b) { mutableListOf() }.add(index)
+    }
+    val unseen = sections.indices.toMutableSet()
+    val paths = mutableListOf<Road>()
+    while (unseen.isNotEmpty()) {
+        val seed = unseen.first()
+        val component = linkedSetOf<Int>()
+        val queue = ArrayDeque<Int>().apply { add(seed) }
+        while (queue.isNotEmpty()) {
+            val index = queue.removeFirst()
+            if (!component.add(index)) continue
+            unseen.remove(index)
+            val road = sections[index]
+            listOfNotNull(road.startNode, road.endNode).forEach { node ->
+                incident[node].orEmpty().forEach { neighbor -> if (neighbor !in component) queue.add(neighbor) }
+            }
+        }
+        val degrees = linkedMapOf<Long, Int>()
+        component.forEach { index ->
+            val road = sections[index]
+            road.startNode?.let { degrees[it] = (degrees[it] ?: 0) + 1 }
+            road.endNode?.let { degrees[it] = (degrees[it] ?: 0) + 1 }
+        }
+        val terminals = degrees.filterValues { it == 1 }.keys
+        val isLinear = degrees.isNotEmpty() && degrees.values.all { it <= 2 } && terminals.size == 2 &&
+            component.all { sections[it].startNode != sections[it].endNode }
+        if (!isLinear) {
+            component.forEach { paths += sections[it] }
+            continue
+        }
+        val terminalPoints = terminals.associateWith { terminal ->
+            val roadIndex = incident[terminal]!!.first()
+            val road = sections[roadIndex]
+            if (road.startNode == terminal) road.points.first() else road.points.last()
+        }
+        val firstNode = terminals.minWithOrNull(compareBy<Long>({ terminalPoints[it]?.lon ?: 0.0 }, { terminalPoints[it]?.lat ?: 0.0 })) ?: continue
+        val orderedIndices = mutableListOf<Int>()
+        val visited = hashSetOf<Int>()
+        var node = firstNode
+        while (true) {
+            val next = incident[node].orEmpty().firstOrNull { it in component && it !in visited } ?: break
+            visited += next
+            orderedIndices += next
+            val road = sections[next]
+            node = if (road.startNode == node) road.endNode ?: break else road.startNode ?: break
+        }
+        if (orderedIndices.size != component.size) {
+            component.forEach { paths += sections[it] }
+            continue
+        }
+        val first = sections[orderedIndices.first()]
+        val points = mutableListOf<GeoPoint>()
+        val nodes = mutableListOf<Long>()
+        var pathNode = firstNode
+        orderedIndices.forEachIndexed { sequenceIndex, sectionIndex ->
+            val road = sections[sectionIndex]
+            val forward = road.startNode == pathNode
+            val roadPoints = if (forward) road.points else road.points.asReversed()
+            val roadNodes = if (forward) road.nodeIds else road.nodeIds.asReversed()
+            if (sequenceIndex == 0) { points += roadPoints; nodes += roadNodes }
+            else { points += roadPoints.drop(1); nodes += roadNodes.drop(1) }
+            pathNode = if (forward) road.endNode!! else road.startNode!!
+        }
+        paths += Road(
+            id = "path:" + orderedIndices.joinToString("+") { sections[it].id },
+            name = first.name,
+            kind = first.kind,
+            nodeIds = nodes,
+            points = points,
+            nodeIdsVerified = orderedIndices.all { sections[it].nodeIdsVerified },
+            continuousPath = true
+        )
+    }
+    return paths
+}
+
+fun findRoadPathById(roads: List<Road>, id: String): Road? =
+    groupRoadsByName(roads).asSequence()
+        .flatMap { (_, sections) -> continuousNamedRoadPaths(sections).asSequence() }
+        .firstOrNull { it.id == id }
 
 fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
     val radius = 6_371_000.0

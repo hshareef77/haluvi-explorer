@@ -154,9 +154,55 @@ class ExplorerEngineTest {
         val second = Place("two", "Second", "shop", GeoPoint(0.0, 0.0008), false)
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second)))
         engine.start(eastRoad, 0.0)
-        assertEquals("First", engine.nextPlace(200.0)?.place?.name)
+        assertEquals("First", engine.nextPlace()?.place?.name)
         engine.start(eastRoad, eastRoad.lengthMeters)
-        assertEquals("Second", engine.nextPlace(200.0)?.place?.name)
+        assertEquals("Second", engine.nextPlace()?.place?.name)
+    }
+
+    @Test fun connectedNamedSectionsBecomeOneEndToEndRoadPath() {
+        val west = Road("w1", "Long Road", "residential", listOf(101, 102), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)), true)
+        val east = Road("w2", "Long Road", "residential", listOf(102, 103), listOf(GeoPoint(0.0, 0.001), GeoPoint(0.0, 0.002)), true)
+        val path = continuousNamedRoadPaths(listOf(east, west)).single()
+        assertTrue(path.continuousPath)
+        assertEquals(listOf(101L, 102L, 103L), path.nodeIds)
+        assertEquals(2, path.points.size)
+        assertEquals(west.lengthMeters + east.lengthMeters, path.lengthMeters, 0.1)
+        assertTrue(path.nodeIdsVerified)
+        assertEquals(path.id, findRoadPathById(listOf(west, east), path.id)?.id)
+    }
+
+    @Test fun nextPlaceSearchesWholeRoadInsteadOfStoppingAt150Metres() {
+        val long = Road("long", "Long Road", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.004)), true)
+        val place = Place("far", "Far Shop", "shop", GeoPoint(0.0, 0.003), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(long), listOf(place))).apply { start(long, 0.0) }
+        assertTrue(engine.nextPlace()!!.distance > 300.0)
+        val target = engine.nextPlace()!!.alongDistance
+        engine.moveAlongRoadTo(target)
+        assertEquals(target, engine.progressMeters, 0.1)
+        assertNull(engine.nextPlace())
+    }
+
+    @Test fun continuousNamedRoadStopsAtInternalJunctionThenContinuesPastIt() {
+        val west = Road("w1", "Long Road", "residential", listOf(101, 102), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)), true)
+        val east = Road("w2", "Long Road", "residential", listOf(102, 103), listOf(GeoPoint(0.0, 0.001), GeoPoint(0.0, 0.002)), true)
+        val side = Road("side", "Side Street", "residential", listOf(102, 104), listOf(GeoPoint(0.0, 0.001), GeoPoint(0.001, 0.001)), true)
+        val path = continuousNamedRoadPaths(listOf(west, east)).single()
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(path, side), emptyList())).apply { start(path, 0.0) }
+        assertEquals(west.lengthMeters, engine.remainingToDecisionPoint(), 0.1)
+        engine.move(west.lengthMeters)
+        assertTrue(engine.atDecisionPoint())
+        assertEquals("Side Street", engine.connections().single().road.name)
+        assertTrue(engine.canContinueOnCurrentRoad())
+        assertTrue(engine.continueOnCurrentRoad())
+        engine.move(10.0)
+        assertTrue(engine.progressMeters > west.lengthMeters)
+        engine.turnAround()
+        engine.move(10.0)
+        assertEquals(west.lengthMeters, engine.progressMeters, 0.1)
+        val facingBeforePrevious = engine.facing()
+        assertTrue(engine.moveBackwardToDecisionPoint() > 100.0)
+        assertEquals(path.lengthMeters, engine.progressMeters, 0.1)
+        assertEquals(facingBeforePrevious, engine.facing())
     }
 
     @Test fun parserRetainsRoadNodeIdentityAndPlaceCoordinates() {

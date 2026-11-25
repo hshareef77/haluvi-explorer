@@ -526,13 +526,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun showRoadSections(name: String, sections: List<Road>) {
-        val ordered = sections.sortedBy { it.id }
+        val ordered = continuousNamedRoadPaths(sections.sortedBy { it.id })
         if (ordered.size == 1) return showRoadOverview(ordered.single())
         val map = loadedMap ?: return
         page("$name Road Sections", "Back to Roads", { chooseRoad(name) }) {
-            addText("$name is stored as ${ordered.size} geometry sections to preserve junction movement. Choose a section to inspect or start walking it.")
+            addText("Choose a connected part of $name. Each part follows the mapped road shape and stops at mapped junctions.")
             ordered.forEachIndexed { index, road ->
-                val label = "Section ${index + 1}, ${road.lengthMeters.roundToInt()} metres. ${endpointDescription(road, map)}"
+                val label = "Part ${index + 1}, ${road.lengthMeters.roundToInt()} metres. ${endpointDescription(road, map)}"
                 addButton(label) { showRoadOverview(road) }
             }
         }
@@ -543,21 +543,37 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val e = ExplorerEngine(map)
         e.start(road, 0.0)
         val endpoints = endpointDescription(road, map)
-        val places = e.nearbyPlaces(100_000.0).filter { it.roadDistance <= 40.0 }.sortedBy { it.alongDistance }
-        val orderedPlaces = places.take(40)
+        val orderedPlaces = e.nearbyPlaces(100_000.0).filter { it.roadDistance <= 40.0 }.sortedBy { it.alongDistance }
         page("Road Overview", "Back to Roads", { chooseRoad() }) {
             addText("Road: ${road.name}")
             addText("Mapped length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}.")
             addText(endpoints)
-            addText("Road sections follow the stored OpenStreetMap geometry. Crossings are treated as connections only when the data contains a shared road node.")
             val connections = connectionsAtEitherEnd(road, map)
-            addText("Connected roads at the ends: ${if (connections.isEmpty()) "No mapped road connections found." else connections.joinToString("; ")}")
-            addText("Mapped places ordered from the first endpoint:")
+            addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
+            addText("Mapped places from the first end to the other:")
             if (orderedPlaces.isEmpty()) addText("No mapped places were found along this road.")
-            orderedPlaces.forEach { item -> addText("${item.place.name}, ${item.place.category}, about ${item.alongDistance.roundToInt()} metres from the first endpoint, approximately ${item.roadDistance.roundToInt()} metres from the road geometry. ${if (item.place.entranceVerified) "An entrance is mapped." else "Nearby position; an entrance on this road is not verified."}") }
-            addButton("Start from first endpoint") { launchOnRoad(road, 0.0) }
-            addButton("Start from other endpoint") { launchOnRoad(road, road.lengthMeters) }
+            orderedPlaces.forEach { item -> addText("${item.place.name}, ${item.place.category}, ${item.alongDistance.roundToInt()} metres from the first end, ${item.roadDistance.roundToInt()} metres from the road. ${if (item.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."}") }
+            val (firstEnd, otherEnd) = endpointNames(road)
+            addText("Next Place follows all mapped places along this connected road. Next Junction stops at each mapped junction.")
+            addButton("Start at $firstEnd end, facing ${compassName(bearingAtEndpoint(road, true))}") { launchOnRoad(road, 0.0) }
+            addButton("Start at $otherEnd end, facing ${compassName(bearingAtEndpoint(road, false))}") { launchOnRoad(road, road.lengthMeters) }
             addButton("Choose a position along this road") { chooseRoadPosition(road) }
+        }
+    }
+
+    private fun bearingAtEndpoint(road: Road, first: Boolean): Double = if (first)
+        bearingDegrees(road.points.first(), road.points.getOrElse(1) { road.points.last() })
+    else bearingDegrees(road.points.last(), road.points.getOrElse(road.points.lastIndex - 1) { road.points.first() })
+
+    private fun endpointNames(road: Road): Pair<String, String> {
+        val first = road.points.first()
+        val last = road.points.last()
+        val eastWestDistance = abs(last.lon - first.lon) * 111_320.0 * kotlin.math.cos(Math.toRadians((first.lat + last.lat) / 2))
+        val northSouthDistance = abs(last.lat - first.lat) * 111_320.0
+        return if (eastWestDistance >= northSouthDistance) {
+            if (first.lon <= last.lon) "west" to "east" else "east" to "west"
+        } else {
+            if (first.lat <= last.lat) "south" to "north" else "north" to "south"
         }
     }
 
@@ -565,16 +581,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val firstBearing = bearingDegrees(road.points.first(), road.points.last())
         val otherBearing = (firstBearing + 180) % 360.0
         fun details(at: GeoPoint, id: Long?): String {
-            val connected = if (id == null) emptyList() else map.roads.filter { it.id != road.id && id in listOf(it.startNode, it.endNode) }.map { it.name }.distinct()
+            val connected = if (id == null) emptyList() else map.roads.filter { it.id != road.id && !it.name.equals(road.name, true) && id in listOf(it.startNode, it.endNode) }.map { it.name }.distinct()
             val landmark = map.places.minByOrNull { distanceMeters(it.point, at) }?.takeIf { distanceMeters(it.point, at) < 100 }?.let { ", near ${it.name}" }.orEmpty()
-            val junction = if (connected.isNotEmpty()) ", junction with ${connected.take(3).joinToString()}" else ", no mapped connecting road"
+            val qualifier = if (!road.nodeIdsVerified) "possible roads" else "roads"
+            val junction = if (connected.isNotEmpty()) ", $qualifier: ${connected.take(3).joinToString()}" else ", no other road mapped"
             return "$junction$landmark"
         }
-        return "First endpoint is approximately ${compassName(firstBearing)} from the other endpoint${details(road.points.first(), road.startNode)}. Other endpoint is approximately ${compassName(otherBearing)}${details(road.points.last(), road.endNode)}. The road geometry may curve or branch."
+        val (firstEnd, otherEnd) = endpointNames(road)
+        return "$firstEnd end, facing ${compassName(firstBearing)}${details(road.points.first(), road.startNode)}. $otherEnd end, facing ${compassName(otherBearing)}${details(road.points.last(), road.endNode)}."
     }
 
     private fun connectionsAtEitherEnd(road: Road, map: MapData): List<String> = listOfNotNull(road.startNode, road.endNode)
-        .flatMap { id -> map.roads.filter { it.id != road.id && id in listOf(it.startNode, it.endNode) }.map { it.name } }.distinct()
+        .flatMap { id -> map.roads.filter { it.id != road.id && !it.name.equals(road.name, true) && id in listOf(it.startNode, it.endNode) }.map { it.name } }.distinct()
 
     private fun chooseRoadPosition(road: Road) {
         page("Choose Starting Position", "Back to Road Overview", { showRoadOverview(road) }) {
@@ -665,34 +683,38 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val map = loadedMap ?: return showHome()
         page("Exploration", "Back to ${map.islandName} Roads", { chooseRoad() }) {
             val current = e.road
-            addText("Island: ${map.islandName}. Road: ${current?.name ?: "none"}.")
-            if (!map.connectivityVerified) addText("Some road sections lack OSM node IDs. Possible connections between those sections are estimated from identical coordinates.")
+            addText("${map.islandName}. ${current?.name ?: "No road selected"}.")
+            if (current?.nodeIdsVerified != true) addText("Road connections may be estimated.")
             val live = addStatus(e.whereAmI())
             val pos = e.position()
             addText(pos?.let { "Current virtual position: ${"%.6f".format(Locale.US, it.lat)}, ${"%.6f".format(Locale.US, it.lon)}." }.orEmpty())
-            addText("Virtual distance travelled: ${e.travelledMeters.roundToInt()} metres. Junctions visited: ${e.visitedJunctions}. Places passed: ${e.visitedPlaceCount()}.")
-            addText("Step size: ${stepMetres()} metres. Move backward follows the road behind you and keeps your facing direction unchanged.")
+            addText("Distance: ${e.travelledMeters.roundToInt()} metres. Places visited: ${e.visitedPlaceCount()}.")
+            addText("Step: ${stepMetres()} metres. Backward keeps your facing direction.")
             addButton("Move Forward") { moveForward(live) }
             addButton("Move Backward") { moveBackward(live) }
-            addButton("Next Place") { moveToNextPlace(live) }
-            addButton("Previous Place") { moveToPreviousPlace(live) }
-            addButton("Next Junction") { moveToJunction(live) }
-            addButton("Previous Junction") { e.turnAround(); moveToJunction(live) }
+            addButton("Next Place on Road") { moveToNextPlace(live) }
+            addButton("Previous Place on Road") { moveToPreviousPlace(live) }
+            addButton("Previous Junction / Road End") { moveToPreviousJunction(live) }
+            addButton("Next Junction / Road End") { moveToJunction(live) }
             addButton("Look Around") { showLookAround() }
             addButton("Where Am I?") { announce(e.whereAmI(), live) }
             addButton("Turn Around") { e.turnAround(); changed("You turned around. You are facing ${e.facing()}.", live) }
-            val atEnd = e.atRoadEnd()
+            val atEnd = e.atDecisionPoint()
             val branches = e.connections()
             if (atEnd) {
                 val junctionVerified = current?.nodeIdsVerified == true && branches.all { it.road.nodeIdsVerified }
-                val junctionLabel = if (junctionVerified) "Junction" else "Possible junction (estimated from shared coordinates)"
-                addText(if (branches.isEmpty()) "Road endpoint. No connected road is mapped here." else "$junctionLabel. ${branches.size} connected roads are listed.")
+                val junctionLabel = if (junctionVerified) "Junction" else "Possible junction (map estimate)"
+                addText(if (branches.isEmpty()) "Road end. No connecting road mapped." else "$junctionLabel. ${branches.size} roads.")
                 if (branches.isNotEmpty()) {
+                    if (e.canContinueOnCurrentRoad()) addButton("Continue on ${current?.name}") {
+                        e.continueOnCurrentRoad()
+                        changed("Continuing on ${current?.name}.", live)
+                    }
                     addButton("Turn Left") { chooseBranch("left", live) }
-                    addButton("Continue Straight") { chooseBranch("straight", live) }
+                    if (!e.canContinueOnCurrentRoad()) addButton("Continue Straight") { chooseBranch("straight", live) }
                     addButton("Turn Right") { chooseBranch("right", live) }
                     addButton("Choose Connected Road") { chooseConnection(branches) }
-                    branches.forEach { c -> addText("Connected road: ${c.road.name}, ${compassName(c.bearingOut)}, relative direction ${c.turn.roundToInt()} degrees.") }
+                    branches.forEach { c -> addText("${relativeDirection(c.turn)}: ${c.road.name}, ${compassName(c.bearingOut)}.") }
                 }
             }
             addButton(if (autoWalking) "Stop Auto Walk" else "Start Auto Walk") { if (autoWalking) stopAutoWalk("Automatic walking stopped.") else startAutoWalk(live) }
@@ -731,21 +753,35 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun moveToJunction(status: TextView?) {
         val e = engine ?: return
-        val dist = e.remainingToRoadEnd()
+        val dist = e.remainingToDecisionPoint()
         if (dist < 0.5) {
             val options = e.connections()
             val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
-            announce(if (options.isEmpty()) "Road endpoint. No connecting road is mapped." else if (verified)
-                "Junction reached. Connected roads: ${options.joinToString { it.road.name }}."
-            else "Possible junction reached. These roads may connect here based on shared coordinates: ${options.joinToString { it.road.name }}.", status)
+            announce(if (options.isEmpty()) "Road end. No other road mapped." else
+                "${if (verified) "Junction" else "Possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
             return
         }
-        val moved = e.move(dist)
+        e.move(dist)
         val options = e.connections()
         val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
-        changed(if (options.isEmpty()) "Reached the end of ${e.road?.name}. No connected road is mapped." else if (verified)
-            "Reached a junction on ${e.road?.name}. ${options.size} connected roads: ${options.joinToString { it.road.name }}."
-        else "Possible junction on ${e.road?.name}, inferred from shared coordinates. ${options.joinToString { it.road.name }} may connect here.", status)
+        changed(if (options.isEmpty()) "End of ${e.road?.name}. No other road mapped." else
+            "${if (verified) "Junction" else "Possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
+    }
+
+    private fun moveToPreviousJunction(status: TextView?) {
+        val e = engine ?: return
+        val moved = e.moveBackwardToDecisionPoint()
+        if (moved == 0.0) { announce("No earlier junction or road end mapped.", status); return }
+        val options = e.connections()
+        val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
+        changed(if (options.isEmpty()) "Previous road end on ${e.road?.name}." else
+            "${if (verified) "Previous junction" else "Previous possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
+    }
+
+    private fun relativeDirection(turn: Double): String = when {
+        turn < -35 -> "Left"
+        turn > 35 -> "Right"
+        else -> "Straight"
     }
 
     private fun chooseBranch(turn: String, status: TextView?) {
@@ -773,21 +809,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun moveToNextPlace(status: TextView?) {
         val e = engine ?: return
         val next = e.nextPlace()
-        if (next == null) { announce("No mapped place ahead on this road within 150 metres.", status); return }
-        val moved = e.move(abs(next.alongDistance - e.progressMeters))
+        if (next == null) { announce("No more mapped places ahead on ${e.road?.name}.", status); return }
+        e.moveAlongRoadTo(next.alongDistance)
         e.markVisited(next.place)
-        changed("Reached ${next.place.name}, ${next.place.category}, about ${next.distance.roundToInt()} metres from the mapped point. ${sideAnnouncement(next)}", status)
+        changed("${next.place.name}, ${next.place.category}, ${next.side}, on ${e.road?.name}.", status)
     }
 
     private fun moveToPreviousPlace(status: TextView?) {
         val e = engine ?: return
-        val direction = -e.travelSign
-        val place = e.nearbyPlaces(150.0).filter { (it.alongDistance - e.progressMeters) * direction >= 1.0 }
-            .minByOrNull { abs(it.alongDistance - e.progressMeters) }
-        if (place == null) { announce("No mapped place behind you on this road within 150 metres.", status); return }
-        e.moveBackward(abs(place.alongDistance - e.progressMeters))
+        val place = e.previousPlace()
+        if (place == null) { announce("No more mapped places behind on ${e.road?.name}.", status); return }
+        e.moveAlongRoadTo(place.alongDistance, keepFacing = true)
         e.markVisited(place.place)
-        changed("Reached ${place.place.name}. ${sideAnnouncement(place)}", status)
+        changed("${place.place.name}, ${place.place.category}, ${place.side}, on ${e.road?.name}.", status)
     }
 
     private fun showLookAround() {
@@ -858,7 +892,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun startAutoWalk(status: TextView?) {
         autoWalking = true
-        announce("Automatic walking started. It will pause at a junction or road endpoint.", status)
+        announce("Walking. It pauses at each junction or road end.", status)
         val task = object : Runnable {
             override fun run() {
                 if (!autoWalking) return
@@ -879,10 +913,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val verified = e.road?.nodeIdsVerified == true && connections.all { it.road.nodeIdsVerified }
                     val junctionMessage = if (verified) "Automatic walking paused at a junction. ${connections.joinToString { it.road.name }} connect here."
                     else "Automatic walking paused at a possible junction. ${connections.joinToString { it.road.name }} may connect here based on coordinates."
-                    announce(if (connections.isEmpty()) "Automatic walking paused at the road endpoint. No road connection is mapped." else junctionMessage, status)
+                    announce(if (connections.isEmpty()) "Paused at road end. No other road mapped." else junctionMessage, status)
                     persistSession(); return
                 }
-                status?.text = "Walking on ${e.road?.name}. ${e.remainingToRoadEnd().roundToInt()} metres to the road endpoint."
+                status?.text = "${e.road?.name}. ${e.remainingToDecisionPoint().roundToInt()} metres to next junction or end."
                 mainHandler.postDelayed(this, 800)
             }
         }
@@ -918,7 +952,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 loaded.onFailure { Toast.makeText(this, "Saved map could not be opened. ${it.message ?: ""}", Toast.LENGTH_LONG).show(); showHome() }
                     .onSuccess { map ->
                         loadedMap = map; loadedFile = file
-                        val road = map.roads.firstOrNull { it.id == prefs.getString("session_road", null) }
+                        val road = findRoadPathById(map.roads, prefs.getString("session_road", null).orEmpty())
                         if (road == null) { chooseRoad(); return@onSuccess }
                         engine = ExplorerEngine(map).apply {
                             restore(road, prefs.getFloat("session_progress", 0f).toDouble(), prefs.getInt("session_sign", 1),
