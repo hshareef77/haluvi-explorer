@@ -140,6 +140,49 @@ data class MapData(
             appendUnique(places)
             return fromOverpass(islandName, JSONObject().put("elements", elements).toString())
         }
+
+        /** Parses Haluvi Navigation's dated, per-atoll OSM snapshot used for offline map installation. */
+        fun fromNavigationAtoll(atollCode: String, atollName: String, jsonText: String,
+                                south: Double, west: Double, north: Double, east: Double): MapData {
+            val root = JSONObject(jsonText)
+            val date = root.optString("date", "unknown date")
+            val roads = buildList {
+                val items = root.optJSONArray("roads") ?: JSONArray()
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    val tags = item.optJSONObject("tags") ?: JSONObject()
+                    val kind = tags.optString("highway")
+                    if (kind !in roadKinds) continue
+                    val geometry = item.optJSONArray("geometry") ?: item.optJSONArray("points") ?: continue
+                    val points = (0 until geometry.length()).mapNotNull { j ->
+                        val p = geometry.optJSONObject(j) ?: return@mapNotNull null
+                        val lat = p.optDouble("lat", Double.NaN); val lon = p.optDouble("lon", Double.NaN)
+                        if (lat.isFinite() && lon.isFinite()) GeoPoint(lat, lon) else null
+                    }
+                    if (points.size < 2 || points.none { it.lat in south..north && it.lon in west..east }) continue
+                    val name = tags.optString("name:en").ifBlank { tags.optString("name") }
+                        .ifBlank { tags.optString("ref") }.ifBlank { "Unnamed road" }
+                    add(Road("builtin:$atollCode:road:$i", name, kind, points.map(::coordinateNodeId), points))
+                }
+            }
+            val places = buildList {
+                val items = root.optJSONArray("places") ?: JSONArray()
+                val categoryKeys = listOf("amenity", "shop", "tourism", "healthcare", "office", "education", "leisure", "public_transport", "aeroway", "man_made", "craft")
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    val lat = item.optDouble("lat", Double.NaN); val lon = item.optDouble("lon", Double.NaN)
+                    if (!lat.isFinite() || !lon.isFinite() || lat !in south..north || lon !in west..east) continue
+                    val tags = item.optJSONObject("tags") ?: JSONObject()
+                    val key = categoryKeys.firstOrNull { tags.has(it) } ?: continue
+                    val category = tags.optString(key).ifBlank { key }
+                    val name = tags.optString("name:en").ifBlank { tags.optString("name") }
+                        .ifBlank { tags.optString("brand") }.ifBlank { category.replace('_', ' ') }
+                    add(Place("builtin:$atollCode:place:$i", name, category, GeoPoint(lat, lon), false, "osm_map"))
+                }
+            }
+            return MapData("$atollName Atoll OpenStreetMap snapshot ($date)", System.currentTimeMillis(),
+                splitRoadsAtSharedNodes(roads), places, "builtin:$atollCode:$date", connectivityVerified = false)
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 package com.hussainshareef.haluviexplorer
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONArray
@@ -11,6 +12,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.util.zip.GZIPInputStream
 
 data class MapDownloadProgress(val stage: String, val bytesRead: Long = 0L, val totalBytes: Long = -1L)
 
@@ -36,7 +38,8 @@ data class IslandArea(
     val atollName: String = ""
 )
 
-class OpenStreetMapRepository {
+class OpenStreetMapRepository(context: Context) {
+    private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var lastGeocodeAt = 0L
@@ -118,8 +121,12 @@ class OpenStreetMapRepository {
                 if (data == null) firstFailure = fallback.exceptionOrNull() ?: firstFailure
             }
             if (data == null || data.roads.isEmpty()) {
-                val detail = firstFailure?.message?.let { ": ${it.take(180)}" }.orEmpty()
-                throw IllegalStateException("Could not download road data for ${area.shortName} after trying separate road and place requests and the expanded island area$detail. No new map was saved. Please retry when the map service is responsive.")
+                check(!handle.cancelled) { "Download cancelled." }
+                data = loadBundledAtoll(area, onProgress)
+            }
+            if (data == null || data.roads.isEmpty()) {
+                val detail = firstFailure?.message?.let { ": ${it.take(120)}" }.orEmpty()
+                throw IllegalStateException("Could not load road data for ${area.shortName} from the online map service or the bundled atoll map$detail. No new map was saved. Please retry when the service is responsive.")
             }
             val completed = data
             check(!handle.cancelled) { "Download cancelled." }
@@ -128,6 +135,24 @@ class OpenStreetMapRepository {
         } catch (t: Throwable) { main.post { callback(Result.failure(if (handle.cancelled) IllegalStateException("Download cancelled.") else t)) } }
         }
         return handle
+    }
+
+    private fun loadBundledAtoll(area: IslandArea, onProgress: (MapDownloadProgress) -> Unit): MapData? {
+        val code = area.atollCode.trim()
+        if (code.isBlank()) return null
+        return try {
+            main.post { onProgress(MapDownloadProgress("Online map service is unavailable. Loading the bundled ${area.atollName} offline map.")) }
+            val assets = appContext.assets
+            val raw = runCatching { assets.open("osm/$code.json.gz") }
+                .getOrElse { assets.open("osm/$code.json") }
+            val input = java.io.BufferedInputStream(raw)
+            input.mark(4)
+            val b1 = input.read(); val b2 = input.read(); input.reset()
+            val decoded = if (b1 == 0x1f && b2 == 0x8b) GZIPInputStream(input) else input
+            val text = decoded.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            MapData.fromNavigationAtoll(code, area.atollName.ifBlank { "${area.shortName} atoll" }, text,
+                area.south, area.west, area.north, area.east).takeIf { it.roads.isNotEmpty() }
+        } catch (_: Throwable) { null }
     }
 
     private fun downloadBox(area: IslandArea, south: Double, west: Double, north: Double, east: Double,

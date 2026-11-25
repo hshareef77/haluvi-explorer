@@ -33,7 +33,7 @@ import kotlin.math.roundToInt
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var store: MapStore
     private lateinit var prefs: android.content.SharedPreferences
-    private val osm = OpenStreetMapRepository()
+    private val osm by lazy { OpenStreetMapRepository(applicationContext) }
     private val mainHandler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var loadedMap: MapData? = null
@@ -389,7 +389,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                         if (saved.isSuccess) {
                             loadedMap = named; loadedFile = saved.getOrThrow()
                             dialog.dismiss(); activeDownloadDialog = null
-                            announce("Download complete. ${area.shortName} is saved offline with ${named.roads.size} road sections and ${named.places.size} places.", status)
+                            val sourceNote = if (named.sourceIslandKey.startsWith("builtin:"))
+                                " Online service was unavailable, so the bundled atoll OpenStreetMap snapshot dated ${named.sourceIslandKey.substringAfterLast(":")} was used."
+                            else ""
+                            announce("Map ready. ${area.shortName} is saved offline with ${named.roads.size} road sections and ${named.places.size} places.$sourceNote", status)
                             showMapOverview()
                         } else {
                             detail.text = "Could not save this map: ${saved.exceptionOrNull()?.message ?: "storage error"}. You can retry."
@@ -457,7 +460,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     val button = Button(this@MainActivity).apply {
                         text = label; contentDescription = "$label, ${atoll.fullname}"; isAllCaps = false; minHeight = dp(58)
                         setOnClickListener {
-                            if (saved == null) searchIsland("${island.name}, ${atoll.fullname}")
+                            if (saved == null) searchIsland("${island.name}, ${atoll.fullname}", island, atoll)
                             else {
                                 openSavedMap(saved, forPlaces, "Back to Island List") { chooseSavedIsland(atoll, forPlaces) }
                             }

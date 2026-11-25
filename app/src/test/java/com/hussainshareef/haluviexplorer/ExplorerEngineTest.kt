@@ -82,6 +82,15 @@ class ExplorerEngineTest {
         assertEquals("Island Pharmacy", map.places.single().name)
     }
 
+    @Test fun bundledAtollSnapshotIsParsedAndLimitedToSelectedIslandBounds() {
+        val snapshot = """{"date":"2026-11-19","roads":[{"tags":{"highway":"residential","name":"Inside Road"},"geometry":[{"lat":1.0,"lon":1.0},{"lat":1.0,"lon":1.001}]},{"tags":{"highway":"residential","name":"Outside Road"},"geometry":[{"lat":2.0,"lon":2.0},{"lat":2.0,"lon":2.001}]}],"places":[{"lat":1.0,"lon":1.0,"tags":{"amenity":"pharmacy","name":"Island Pharmacy"}},{"lat":2.0,"lon":2.0,"tags":{"amenity":"school","name":"Other Island School"}}]}"""
+        val map = MapData.fromNavigationAtoll("K", "Kaafu", snapshot, 0.99, 0.99, 1.01, 1.01)
+        assertEquals("builtin:K:2026-11-19", map.sourceIslandKey)
+        assertFalse(map.connectivityVerified)
+        assertEquals(listOf("Inside Road"), map.roads.map { it.name })
+        assertEquals(listOf("Island Pharmacy"), map.places.map { it.name })
+    }
+
     @Test fun movingBackwardKeepsFacingAndUsesActualRoadDirection() {
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), emptyList()))
         engine.start(eastRoad, eastRoad.lengthMeters / 2)

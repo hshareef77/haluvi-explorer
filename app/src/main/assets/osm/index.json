@@ -1,0 +1,128 @@
+{
+ "date": "2026-11-19",
+ "source": "Geofabrik Maldives extract",
+ "atolls": {
+  "HA": {
+   "places": 270,
+   "roads": 900,
+   "bytes": 40761,
+   "sha256": "37e5e2410718560ab498733791244113b6555424ab1a1c6991c43dc3145d0683"
+  },
+  "HDh": {
+   "places": 264,
+   "roads": 1241,
+   "bytes": 64155,
+   "sha256": "b95793790f72c7ab4c6ffc36e484acd6f69983eb238216e61dfacf50c0bcb4c6"
+  },
+  "Sh": {
+   "places": 139,
+   "roads": 434,
+   "bytes": 21173,
+   "sha256": "5f4fa44ea75be7159b09916ee126356fb983cf15ea6860d5016f1db60c57e8bb"
+  },
+  "N": {
+   "places": 268,
+   "roads": 882,
+   "bytes": 47970,
+   "sha256": "fab4e4e654e7caf132ac5d003d9608685ba7eeb90074ce8ec4a276fac4307966"
+  },
+  "R": {
+   "places": 505,
+   "roads": 812,
+   "bytes": 42518,
+   "sha256": "852dd18f0630060a85131f0e588ab33e864c1e2d557b81d57a49fbe687aac8aa"
+  },
+  "B": {
+   "places": 594,
+   "roads": 654,
+   "bytes": 44861,
+   "sha256": "c515e753a65664d637b9438763ab22be72924153359078fe343533c2d2041db0"
+  },
+  "Lh": {
+   "places": 138,
+   "roads": 285,
+   "bytes": 16501,
+   "sha256": "2ddd06f9f8ac9d32ede44e109d2d3415c1621d591aec58ffc5f6f254886434e1"
+  },
+  "K": {
+   "places": 3900,
+   "roads": 2906,
+   "bytes": 241694,
+   "sha256": "cd35639678fe1503aeb986d017cf7fae0cb3a3af9a5b5e0a260289d72d85685c"
+  },
+  "AA": {
+   "places": 874,
+   "roads": 478,
+   "bytes": 42351,
+   "sha256": "9f4a3fc341d155e5880198bbffd308d20bfd06c605543e4b10553cde89b047f0"
+  },
+  "ADh": {
+   "places": 1356,
+   "roads": 555,
+   "bytes": 45078,
+   "sha256": "76fbf0115edeb9c937c5f2a380db837db72cf4b9542a33cbd5a771d067ee74c0"
+  },
+  "V": {
+   "places": 133,
+   "roads": 46,
+   "bytes": 5454,
+   "sha256": "eeee8b7c132cf27d7ee41c2494d63f823f06a556ec52807c6b5ec39afcb8b01e"
+  },
+  "M": {
+   "places": 193,
+   "roads": 218,
+   "bytes": 9968,
+   "sha256": "6f265cf5d06707352569c66c980f749cf473eebeeb3a0a801ad96515ac9a0dd2"
+  },
+  "F": {
+   "places": 24,
+   "roads": 119,
+   "bytes": 4984,
+   "sha256": "f206e64a5d7c875484bb82e40e3cf71a7e2fe7306490de3072ae40d626ba8c9c"
+  },
+  "Dh": {
+   "places": 367,
+   "roads": 330,
+   "bytes": 22912,
+   "sha256": "359f321168cde7b88957bf04b4ea53463cde699c087f0aad33a8679ded285334"
+  },
+  "Th": {
+   "places": 71,
+   "roads": 400,
+   "bytes": 18260,
+   "sha256": "0dde4f8bc20e94f2335633f3d8bbf44adfaa2a9cc643848cbef9c2e044f82664"
+  },
+  "L": {
+   "places": 112,
+   "roads": 627,
+   "bytes": 35659,
+   "sha256": "91b1f742fba2489523b04f89aeef15900072c7f8103ad55f39806d7c222474a4"
+  },
+  "GA": {
+   "places": 172,
+   "roads": 342,
+   "bytes": 17984,
+   "sha256": "ebb2487bcd1bd1e96c181150d9c02f06f4193a429647b6fdc558a7dcbea2ec0b"
+  },
+  "GDh": {
+   "places": 203,
+   "roads": 579,
+   "bytes": 30122,
+   "sha256": "668d92b6100c0b22d2d7173b0fdea67432d4da89779233dd1db29c9810dd9931"
+  },
+  "Gn": {
+   "places": 287,
+   "roads": 569,
+   "bytes": 34195,
+   "sha256": "3b19782a22ae813736c0287244231af81edf396568fd37445315142a188fd9f4"
+  },
+  "S": {
+   "places": 650,
+   "roads": 1106,
+   "bytes": 67846,
+   "sha256": "d5be279244e4eb882684358c96e50b3ec3769f80e69ec5f83b0f90d319fc9e6f"
+  }
+ },
+ "busRoutes": 6,
+ "stamp": "2026-11-19T23:48:01Z"
+}
