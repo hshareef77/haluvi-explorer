@@ -112,7 +112,14 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private inner class PageBuilder(title: String) {
-        val scroll = android.widget.ScrollView(this@MainActivity)
+        val scroll = android.widget.ScrollView(this@MainActivity).apply {
+            isFillViewport = true
+            isSmoothScrollingEnabled = false
+            isVerticalScrollBarEnabled = true
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            if (android.os.Build.VERSION.SDK_INT >= 28) accessibilityPaneTitle = title
+        }
         val column = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(28))
@@ -546,18 +553,32 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val orderedPlaces = e.nearbyPlaces(100_000.0).filter { it.roadDistance <= 40.0 }.sortedBy { it.alongDistance }
         page("Road Overview", "Back to Roads", { chooseRoad() }) {
             addText("Road: ${road.name}")
+            addText("Choose where to start. These controls are at the top of the screen.")
+            val (firstEnd, otherEnd) = endpointNames(road)
+            addButton("Start at the $firstEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, true))}") { launchOnRoad(road, 0.0) }
+            addButton("Start at the $otherEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, false))}") { launchOnRoad(road, road.lengthMeters) }
+            addButton("Choose a position along ${road.name}") { chooseRoadPosition(road) }
+            addButton("Places along ${road.name}, ${orderedPlaces.size} places") { showRoadPlaces(road, orderedPlaces) }
+            addText("Road details")
             addText("Mapped length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}.")
             addText(endpoints)
             val connections = connectionsAtEitherEnd(road, map)
             addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
-            addText("Mapped places from the first end to the other:")
-            if (orderedPlaces.isEmpty()) addText("No mapped places were found along this road.")
-            orderedPlaces.forEach { item -> addText("${item.place.name}, ${item.place.category}, ${item.alongDistance.roundToInt()} metres from the first end, ${item.roadDistance.roundToInt()} metres from the road. ${if (item.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."}") }
-            val (firstEnd, otherEnd) = endpointNames(road)
             addText("Next Place follows all mapped places along this connected road. Next Junction stops at each mapped junction.")
-            addButton("Start at $firstEnd end, facing ${compassName(bearingAtEndpoint(road, true))}") { launchOnRoad(road, 0.0) }
-            addButton("Start at $otherEnd end, facing ${compassName(bearingAtEndpoint(road, false))}") { launchOnRoad(road, road.lengthMeters) }
-            addButton("Choose a position along this road") { chooseRoadPosition(road) }
+        }
+    }
+
+    private fun showRoadPlaces(road: Road, orderedPlaces: List<NearbyPlace>) {
+        page("Places Along ${road.name}", "Back to Road Overview", { showRoadOverview(road) }) {
+            addText("${orderedPlaces.size} mapped places, ordered from the first end of ${road.name}. Place records and their source data are unchanged.")
+            if (orderedPlaces.isEmpty()) {
+                addText("No mapped places were found along this road.")
+            } else {
+                orderedPlaces.forEachIndexed { index, item ->
+                    addText("Place ${index + 1}: ${item.place.name}, ${item.place.category}, ${item.alongDistance.roundToInt()} metres from the first end, ${item.roadDistance.roundToInt()} metres from the road. ${if (item.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."}")
+                }
+            }
+            addButton("Back to Road Overview") { showRoadOverview(road) }
         }
     }
 
