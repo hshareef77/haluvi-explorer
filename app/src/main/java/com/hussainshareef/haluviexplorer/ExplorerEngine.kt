@@ -225,7 +225,7 @@ class ExplorerEngine(private val map: MapData) {
             .sortedWith(placeOrder(travelSign))
         val cursor = currentPlaceCursorIndex(current, places)
         if (cursor != null) return places.getOrNull(cursor + 1)
-        return places.firstOrNull { (it.alongDistance - progressMeters) * travelSign >= -0.5 }
+        return places.firstOrNull { (it.alongDistance - progressMeters) * travelSign >= 0.1 }
     }
 
     fun previousPlace(): NearbyPlace? {
@@ -236,7 +236,7 @@ class ExplorerEngine(private val map: MapData) {
             .sortedWith(placeOrder(travelSign))
         val cursor = currentPlaceCursorIndex(current, places)
         if (cursor != null) return places.getOrNull(cursor - 1)
-        return places.firstOrNull { (it.alongDistance - progressMeters) * direction >= -0.5 }
+        return places.firstOrNull { (it.alongDistance - progressMeters) * direction >= 0.1 }
     }
 
     /** Records the selected place so repeated next/previous actions traverse even co-located records. */
