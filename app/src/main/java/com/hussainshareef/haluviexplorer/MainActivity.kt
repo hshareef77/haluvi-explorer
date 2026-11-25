@@ -602,9 +602,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             column.addView(results)
             fun populate() {
                 results.removeAllViews()
-                val matches = map.places.filter { (it.name + " " + it.category).contains(search.text.toString(), true) }.take(100)
+                val matches = map.places.filter { (it.name + " " + it.category + " " + placeSourceLabel(it)).contains(search.text.toString(), true) }.take(100)
                 matches.forEach { place ->
-                    val b = Button(this@MainActivity).apply { text = "${place.name}, ${place.category}"; contentDescription = "Place ${place.name}, ${place.category}"; isAllCaps = false; minHeight = dp(58); setOnClickListener { showPlaceDetail(place) } }
+                    val label = "${place.name}, ${place.category}" + placeSourceLabel(place).takeIf { it.isNotBlank() }?.let { ", source: $it" }.orEmpty()
+                    val b = Button(this@MainActivity).apply { text = label; contentDescription = "Place $label"; isAllCaps = false; minHeight = dp(58); setOnClickListener { showPlaceDetail(place) } }
                     results.addView(b, LinearLayout.LayoutParams(-1, -2))
                 }
                 statusView?.text = "${map.places.size} mapped places available offline. ${matches.size} results shown."
@@ -624,6 +625,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val nearest = ExplorerEngine(map).nearestRoad(place.point)
         page("Place Details", "Back to Places", { showPlaceList() }) {
             addText("${place.name}. Category: ${place.category}.")
+            placeSourceLabel(place).takeIf { it.isNotBlank() }?.let { addText("Source: $it.") }
             addText(if (place.entranceVerified) "OpenStreetMap includes an entrance tag at this position." else "This is a mapped place position. Its building entrance and which road it faces are not verified.")
             addText("Position: ${place.point.lat}, ${place.point.lon}.")
             addText(nearest?.let { "Nearest mapped road: ${it.first.name}, about ${distanceMeters(place.point, pointAt(it.first, it.second)).roundToInt()} metres away." } ?: "No mapped road found nearby.")
@@ -638,6 +640,16 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 showExplore()
             }
         }
+    }
+
+    private fun placeSourceLabel(place: Place): String = when (place.source.trim().lowercase()) {
+        "google" -> "Google Places"
+        "osm_map" -> "OpenStreetMap"
+        "osm_search" -> "OpenStreetMap search"
+        "rtl" -> "RTL transport data"
+        "manual" -> "saved place"
+        "" -> ""
+        else -> place.source.replace('_', ' ')
     }
 
     private fun showExplore() {
@@ -773,10 +785,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Surroundings within ${radius.roundToInt()} metres. Left and right are relative to your current facing direction.")
             addText(if (places.isEmpty()) "No mapped places within this radius." else "Mapped places:")
             places.forEach { item ->
-                addButton("${item.place.name}, ${item.place.category}, ${item.side}, ${item.distance.roundToInt()} metres") {
+                val source = placeSourceLabel(item.place).takeIf { it.isNotBlank() }?.let { ", source: $it" }.orEmpty()
+                addButton("${item.place.name}, ${item.place.category}$source, ${item.side}, ${item.distance.roundToInt()} metres") {
                     destination = item.place
                     page("Nearby Place", "Back to Look Around", ::showLookAround) {
                         addText("${item.place.name}, ${item.place.category}, ${item.side}, ${item.distance.roundToInt()} metres away.")
+                        placeSourceLabel(item.place).takeIf { it.isNotBlank() }?.let { addText("Source: $it.") }
                         addText(if (item.place.entranceVerified) "An entrance is mapped here." else "Entrance location is not verified.")
                         addButton("Move to this place along the road") {
                             val delta = item.alongDistance - (engine?.progressMeters ?: 0.0)
