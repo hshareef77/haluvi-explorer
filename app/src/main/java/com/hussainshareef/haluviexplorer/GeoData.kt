@@ -23,7 +23,8 @@ data class Place(
     val name: String,
     val category: String,
     val point: GeoPoint,
-    val entranceVerified: Boolean
+    val entranceVerified: Boolean,
+    val source: String = ""
 )
 
 data class MapData(
@@ -49,7 +50,7 @@ data class MapData(
         put("places", JSONArray().apply {
             places.forEach { place -> put(JSONObject().apply {
                 put("id", place.id); put("name", place.name); put("category", place.category)
-                put("lat", place.point.lat); put("lon", place.point.lon); put("entranceVerified", place.entranceVerified)
+                put("lat", place.point.lat); put("lon", place.point.lon); put("entranceVerified", place.entranceVerified); put("source", place.source)
             }) }
         })
     }
@@ -78,7 +79,7 @@ data class MapData(
                 for (i in 0 until array.length()) {
                     val item = array.optJSONObject(i) ?: continue
                     add(Place(item.optString("id"), item.optString("name"), item.optString("category"),
-                        GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified")))
+                        GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified"), item.optString("source")))
                 }
             }
             return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places,
@@ -115,7 +116,7 @@ data class MapData(
                     val key = placeKeys.firstOrNull { tags.has(it) } ?: continue
                     val display = tags.optString("name").ifBlank { tags.optString("brand").ifBlank { tags.optString(key) } }
                     val entrance = tags.optString("entrance").isNotBlank() || tags.optString("entrance:yes").isNotBlank()
-                    val place = Place("$type$id", display, tags.optString(key), pos, entrance)
+                    val place = Place("$type$id", display, tags.optString(key), pos, entrance, "osm_map")
                     places[place.id] = place
                 }
             }

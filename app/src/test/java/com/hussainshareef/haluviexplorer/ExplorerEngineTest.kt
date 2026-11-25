@@ -146,6 +146,16 @@ class ExplorerEngineTest {
         assertFalse(map.connectivityVerified)
     }
 
+    @Test fun importsRTLBusStopsInsteadOfDiscardingOtherSourceRecords() {
+        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","locations":[{"id":"rtl-1","name":"Bus Stop","lat":4.1751,"lon":73.5107,"source":"rtl","categoryId":"bus","islandKey":"K:Malé","islandName":"Kaafu Malé"}]}"""
+        val batch = HaluviBackupImporter.parse(backup)
+        val place = batch.maps.single().places.single()
+        assertEquals("rtl-1", place.id)
+        assertEquals("rtl", place.source)
+        assertEquals("bus", place.category)
+        assertEquals(0, batch.unsupportedPlacesSkipped)
+    }
+
     @Test fun refusesNonNavigationJsonAsMapBackup() {
         try {
             HaluviBackupImporter.parse("{\"roads\":[]}")

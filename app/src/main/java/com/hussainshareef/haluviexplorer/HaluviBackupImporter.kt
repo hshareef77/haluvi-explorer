@@ -66,8 +66,10 @@ object HaluviBackupImporter {
             val source = item.optString("source", "manual").ifBlank { "manual" }
             if (source.equals("google", ignoreCase = true)) { googleSkipped++; continue }
             if (source !in setOf("manual", "osm_map", "osm_search")) { unsupportedSkipped++; continue }
-            val key = item.optString("islandKey")
-            if (key.isBlank()) { unsupportedSkipped++; continue }
+            val islandName = item.optString("islandName").trim()
+            val key = item.optString("islandKey").ifBlank {
+                islandName.takeIf { it.isNotBlank() }?.let { "imported:$it" } ?: "imported-unassigned"
+            }
             val lat = item.optDouble("lat", Double.NaN)
             val lon = item.optDouble("lon", Double.NaN)
             if (!validCoordinate(lat, lon)) { unsupportedSkipped++; continue }
@@ -75,8 +77,7 @@ object HaluviBackupImporter {
             if (name.isBlank()) { unsupportedSkipped++; continue }
             val category = item.optString("categoryId").ifBlank { "other" }
             val id = item.optString("id").ifBlank { "backup:$key:$i" }
-            placesByIsland.getOrPut(key) { mutableListOf() } += Place(id, name, category, GeoPoint(lat, lon), false)
-            val islandName = item.optString("islandName").trim()
+            placesByIsland.getOrPut(key) { mutableListOf() } += Place(id, name, category, GeoPoint(lat, lon), false, source)
             if (islandName.isNotBlank()) displayNames[key] = islandName
         }
 
