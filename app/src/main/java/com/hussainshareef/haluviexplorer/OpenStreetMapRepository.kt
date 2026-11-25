@@ -110,6 +110,11 @@ class OpenStreetMapRepository(context: Context) {
             val selectedAttempt = runCatching { downloadBox(area, area.south, area.west, area.north, area.east, handle, onProgress) }
             var data = selectedAttempt.getOrNull()
             var firstFailure = selectedAttempt.exceptionOrNull()
+            if (data == null && firstFailure !is NoRoadGeometryException) {
+                // Prefer the prepared atoll snapshot immediately after network errors, avoiding another
+                // long request for a larger area when the online service is already timing out.
+                data = loadBundledAtoll(area, onProgress)
+            }
             if (data == null && area.fallbackBounds.size == 4) {
                 check(!handle.cancelled) { "Download cancelled." }
                 main.post { onProgress(MapDownloadProgress(if (firstFailure is NoRoadGeometryException)
@@ -159,12 +164,12 @@ class OpenStreetMapRepository(context: Context) {
                             handle: MapDownloadHandle, onProgress: (MapDownloadProgress) -> Unit): MapData {
         val box = "$south,$west,$north,$east"
         val roadQuery = """
-            [out:json][timeout:45];
+            [out:json][timeout:30];
             way[highway~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian|footway|path|track|road|steps|cycleway|bridleway)$"]($box);
             out geom tags;
         """.trimIndent()
         val placeQuery = """
-            [out:json][timeout:45];
+            [out:json][timeout:30];
             (nwr[amenity]($box); nwr[shop]($box); nwr[tourism]($box); nwr[leisure]($box);
              nwr[healthcare]($box); nwr[office]($box); nwr[education]($box););
             out center tags;
@@ -211,7 +216,7 @@ class OpenStreetMapRepository(context: Context) {
         val connection = URL(urlString).openConnection() as HttpURLConnection
         handle?.connection = connection
         connection.connectTimeout = 10_000
-        connection.readTimeout = 45_000
+        connection.readTimeout = 25_000
         connection.requestMethod = if (body == null) "GET" else "POST"
         connection.setRequestProperty("User-Agent", "HaluviExplorer/0.1.0 (Android offline virtual exploration)")
         connection.setRequestProperty("Accept", "application/json")
