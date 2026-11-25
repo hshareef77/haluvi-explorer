@@ -72,6 +72,16 @@ class ExplorerEngineTest {
         assertFalse(isIslandOrSettlementResult(JSONObject("""{"category":"building","type":"yes"}""")))
     }
 
+    @Test fun separateOverpassRoadAndPlaceResponsesAreCombined() {
+        val roadJson = """{"elements":[{"type":"way","id":42,"nodes":[1,2],"tags":{"highway":"residential","name":"Test Hingun"},"geometry":[{"lat":0.0,"lon":0.0},{"lat":0.0,"lon":0.001}]}]}"""
+        val placeJson = """{"elements":[{"type":"node","id":9,"lat":0.0,"lon":0.0005,"tags":{"amenity":"pharmacy","name":"Island Pharmacy"}}]}"""
+        val map = MapData.fromOverpassParts("Test Island", roadJson, placeJson)
+        assertEquals(1, map.roads.size)
+        assertEquals("Test Hingun", map.roads.single().name)
+        assertEquals(1, map.places.size)
+        assertEquals("Island Pharmacy", map.places.single().name)
+    }
+
     @Test fun movingBackwardKeepsFacingAndUsesActualRoadDirection() {
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), emptyList()))
         engine.start(eastRoad, eastRoad.lengthMeters / 2)

@@ -122,6 +122,24 @@ data class MapData(
             }
             return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList())
         }
+
+        /** Joins the smaller road-only and place-only Overpass responses without issuing one oversized query. */
+        fun fromOverpassParts(islandName: String, roadsResponse: String, placesResponse: String): MapData {
+            val roads = JSONObject(roadsResponse).optJSONArray("elements") ?: JSONArray()
+            val places = JSONObject(placesResponse).optJSONArray("elements") ?: JSONArray()
+            val elements = JSONArray()
+            val seen = HashSet<String>()
+            fun appendUnique(array: JSONArray) {
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val key = "${item.optString("type")}:${item.optLong("id", i.toLong())}"
+                    if (seen.add(key)) elements.put(item)
+                }
+            }
+            appendUnique(roads)
+            appendUnique(places)
+            return fromOverpass(islandName, JSONObject().put("elements", elements).toString())
+        }
     }
 }
 
