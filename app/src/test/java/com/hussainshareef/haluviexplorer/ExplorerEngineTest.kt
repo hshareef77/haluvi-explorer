@@ -3,6 +3,7 @@ package com.hussainshareef.haluviexplorer
 import org.junit.Assert.*
 import org.junit.Test
 import org.json.JSONObject
+import java.io.File
 
 class ExplorerEngineTest {
     private val eastRoad = Road("east", "East Road", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)))
@@ -70,6 +71,18 @@ class ExplorerEngineTest {
         assertTrue(isIslandOrSettlementResult(JSONObject("""{"category":"place","type":"island"}""")))
         assertFalse(isIslandOrSettlementResult(JSONObject("""{"category":"amenity","type":"courthouse"}""")))
         assertFalse(isIslandOrSettlementResult(JSONObject("""{"category":"building","type":"yes"}""")))
+    }
+
+    @Test fun savedMapMatchingDoesNotTreatMaleAsPartOfHulhumale() {
+        val kaafu = AtollEntry("K", "Kaafu", emptyList())
+        val male = IslandEntry("Male'", 4.17, 73.5)
+        val hulhumale = IslandEntry("Hulhumale'", 4.21, 73.54)
+        val hulhumaleMap = StoredMapSummary(File("k-hulhumale.json"), "Kaafu Hulhumale'", "K:Hulhumale'", 20, 30, 0, 0, 0)
+        val maleMap = StoredMapSummary(File("k-male.json"), "Kaafu Male'", "K:Male'", 10, 15, 0, 0, 0)
+        assertFalse(storedMapMatchesIsland(hulhumaleMap, kaafu, male))
+        assertTrue(storedMapMatchesIsland(hulhumaleMap, kaafu, hulhumale))
+        assertTrue(storedMapMatchesIsland(maleMap, kaafu, male))
+        assertFalse(storedMapMatchesIsland(maleMap, kaafu, hulhumale))
     }
 
     @Test fun separateOverpassRoadAndPlaceResponsesAreCombined() {

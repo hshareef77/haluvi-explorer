@@ -441,13 +441,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val status = addStatus("Reading downloaded island maps…")
             var summaries: List<StoredMapSummary>? = null
             fun findSavedMap(island: IslandEntry): StoredMapSummary? {
-                val islandKey = "${atoll.code}:${island.name}"
-                return summaries.orEmpty().firstOrNull { summary ->
-                    val file = summary.file
-                    normalizedIsland(summary.sourceIslandKey) == normalizedIsland(islandKey) ||
-                        normalizedIsland(summary.islandName).let { it.startsWith(normalizedIsland(island.name)) || it.endsWith(normalizedIsland(island.name)) } ||
-                        file.nameWithoutExtension.equals(island.name.replace(Regex("[^a-zA-Z0-9]+"), "-").trim('-'), true)
-                }
+                return summaries.orEmpty().firstOrNull { summary -> storedMapMatchesIsland(summary, atoll, island) }
             }
             fun populate() {
                 results.removeAllViews()
@@ -481,9 +475,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             }.start()
         }
     }
-
-    private fun normalizedIsland(value: String): String = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
-        .replace(Regex("\\p{M}+"), "").lowercase().filter { it.isLetterOrDigit() }
 
     private fun loadMap(file: File) {
         loadedMap = store.load(file); loadedFile = file
