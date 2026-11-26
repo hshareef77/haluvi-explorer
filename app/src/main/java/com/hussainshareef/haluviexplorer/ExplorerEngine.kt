@@ -43,6 +43,8 @@ data class NearbyPlace(
 )
 data class RoadCrossing(val roadName: String, val side: String, val verified: Boolean, val alongDistance: Double)
 
+private val ADDRESS_NORMALIZATION_REGEX = Regex("[^\\p{L}\\p{N}]+")
+
 private data class RoadPlaceProjection(
     val recordIndex: Int,
     val place: Place,
@@ -465,12 +467,16 @@ class ExplorerEngine(private val map: MapData) {
         }.toList()
     }
 
+    fun preparePlaceMatchingForCurrentRoad() {
+        road?.let { projectionsFor(it) }
+    }
+
     private fun projectionsFor(current: Road): List<RoadPlaceProjection> = placeProjectionCache.getOrPut(current.id) {
+        val normalizedCurrentRoad = normalizeAddress(current.name)
         map.places.mapIndexedNotNull { index, place ->
-            val hints = place.roadAddressHints()
-            val normalizedAddress = normalizeAddress(hints.joinToString(" "))
-            val addressMatched = roadNameInAddress(current.name, normalizedAddress)
-            val addressNamesMappedRoad = normalizedMapRoadNames.any { roadNameInAddress(it, normalizedAddress) }
+            val normalizedAddress = normalizeAddress(place.roadAddressHints().joinToString(" "))
+            val addressMatched = roadNameInNormalizedAddress(normalizedCurrentRoad, normalizedAddress)
+            val addressNamesMappedRoad = normalizedMapRoadNames.any { roadNameInNormalizedAddress(it, normalizedAddress) }
             val (along, foot, segmentIndex) = projectToLine(current.points, place.point)
             val nearest = if (addressMatched || addressNamesMappedRoad) null else nearestMappedRoad(index, place.point)
             RoadPlaceProjection(index, place, along, foot, distanceMeters(foot, place.point), segmentIndex,
@@ -486,13 +492,13 @@ class ExplorerEngine(private val map: MapData) {
         else -> "nearest-road match unavailable"
     }
 
-    private fun normalizeAddress(value: String) = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+    private fun normalizeAddress(value: String) = value.lowercase().replace(ADDRESS_NORMALIZATION_REGEX, " ").trim()
 
-    private fun roadNameInAddress(roadName: String, address: String): Boolean {
-        val road = normalizeAddress(roadName)
-        val text = normalizeAddress(address)
-        return road.isNotBlank() && " $text ".contains(" $road ")
-    }
+    private fun roadNameInAddress(roadName: String, address: String): Boolean =
+        roadNameInNormalizedAddress(normalizeAddress(roadName), normalizeAddress(address))
+
+    private fun roadNameInNormalizedAddress(normalizedRoadName: String, normalizedAddress: String): Boolean =
+        normalizedRoadName.isNotBlank() && " $normalizedAddress ".contains(" $normalizedRoadName ")
 
     /**
      * Assigns address-free places to only their nearest mapped road geometry. This keeps
