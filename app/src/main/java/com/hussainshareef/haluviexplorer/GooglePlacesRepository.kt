@@ -95,7 +95,7 @@ object GooglePlacesRepository {
         )
         val fields = listOf(
             com.google.android.libraries.places.api.model.Place.Field.ID,
-            com.google.android.libraries.places.api.model.Place.Field.DISPLAY_NAME,
+            com.google.android.libraries.places.api.model.Place.Field.NAME,
             com.google.android.libraries.places.api.model.Place.Field.ADDRESS,
             com.google.android.libraries.places.api.model.Place.Field.TYPES
         )
@@ -108,8 +108,8 @@ object GooglePlacesRepository {
                 val results = response.places.map { place ->
                     GooglePlaceResult(
                         id = place.id.orEmpty(),
-                        name = place.displayName ?: "Unnamed Google place",
-                        category = place.types?.firstOrNull()?.replace('_', ' ') ?: "place",
+                        name = place.name ?: "Unnamed Google place",
+                        category = "Google Places result",
                         address = place.address.orEmpty()
                     )
                 }
