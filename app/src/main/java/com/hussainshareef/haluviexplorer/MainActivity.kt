@@ -930,7 +930,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         e.moveAlongRoadTo(next.alongDistance)
         e.rememberPlaceNavigation(next)
         e.markVisited(next)
-        changed(placeStepAnnouncement("Next place", next, crossings), status)
+        changed(formatPlaceStepAnnouncement("Next place", next, e.road?.name.orEmpty(), crossings), status)
     }
 
     private fun moveToPreviousPlace(status: TextView?) {
@@ -941,28 +941,83 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         e.moveAlongRoadTo(place.alongDistance, keepFacing = true)
         e.rememberPlaceNavigation(place)
         e.markVisited(place)
-        changed(placeStepAnnouncement("Previous place", place, crossings), status)
+        changed(formatPlaceStepAnnouncement("Previous place", place, e.road?.name.orEmpty(), crossings), status)
     }
 
-    private fun placeStepAnnouncement(label: String, place: NearbyPlace, crossings: List<RoadCrossing>): String {
-        val placeLocation = if (place.roadDistance > 40.0) {
-            "mapped point ${place.roadDistance.roundToInt()} metres from the road; side and road match are estimates"
-        } else "${place.side} of ${engine?.road?.name}, ${place.roadDistance.roundToInt()} metres from the road"
-        val crossingText = crossings.takeIf { it.isNotEmpty() }?.joinToString(separator = "; ", prefix = " On the way, you crossed ") { crossing ->
-            "${if (crossing.verified) "mapped junction" else "possible junction"} with ${crossing.roadName} ${when (crossing.side) { "straight" -> "straight ahead"; else -> "on your ${crossing.side}" }}"
-        }.orEmpty()
-        val addressNote = if (place.association == "address names this road") " Address names this road." else ""
-        return "$label: ${place.place.name}, ${place.place.category}, $placeLocation.$addressNote$crossingText"
-    }
 
     private fun showLookAround() {
         val e = engine ?: return
+        val center = e.position() ?: return
         val radius = prefs.getInt("radius", 100).toDouble()
         val places = e.nearbyPlaces(radius)
         val options = e.connections()
+        val mode = prefs.getInt("google_places_mode", 0).coerceIn(0, 2)
+        val googleEnabled = prefs.getBoolean("google_places_enabled", false)
         page("Look Around", "Back to Exploration", ::showExplore) {
+            val generation = screenGeneration
             addText("Surroundings within ${radius.roundToInt()} metres. Left and right are relative to your current facing direction.")
-            addText(if (places.isEmpty()) "No mapped places within this radius." else "Mapped places:")
+            if (mode > 0) {
+                addText("Google Maps live results are separate from your saved Google Places and other offline places. They do not change Next Place or Previous Place on this road.")
+                val googleStatus = addText("", live = true)
+                val googleRows = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                column.addView(googleRows)
+                fun lookupGoogle() {
+                    if (!googleEnabled) {
+                        googleStatus.text = "Google Places is turned off. Your saved offline places are shown below."
+                        googleStatus.sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+                        return
+                    }
+                    val key = GooglePlacesKeyStore.load(this@MainActivity)
+                    if (key.isNullOrBlank()) {
+                        googleStatus.text = "No Google API key is saved. Your saved offline places are shown below."
+                        googleStatus.sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+                        return
+                    }
+                    googleStatus.text = "Searching Google Places near your virtual position."
+                    GooglePlacesRepository.search(this@MainActivity, key, center, radius) { results, errorCode ->
+                        if (generation != screenGeneration || isFinishing) return@search
+                        googleRows.removeAllViews()
+                        if (results == null) {
+                            googleStatus.text = when (errorCode) {
+                                -2 -> "The API key changed after Google Places started. Restart Haluvi Explorer to use the new key. Saved offline places are shown below."
+                                null -> "Google Places lookup failed. Your saved offline places are shown below."
+                                else -> "Google Places lookup failed with error $errorCode. Your saved offline places are shown below."
+                            }
+                            googleStatus.sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+                        } else if (results.isEmpty()) {
+                            googleStatus.text = "Google Maps returned no places for this search. Your saved offline places are shown below."
+                            googleStatus.sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+                        } else {
+                            googleStatus.text = "Google Maps returned ${results.size} nearby results. Results are limited to 20 per search and may not include every place."
+                            googleStatus.sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+                            results.forEach { result ->
+                                val label = listOf(result.name, result.category, result.address).filter { it.isNotBlank() }.joinToString(", ")
+                                val item = Button(this@MainActivity).apply {
+                                    text = label
+                                    contentDescription = "Google Maps place: $label"
+                                    isAllCaps = false
+                                    minHeight = dp(58)
+                                    setOnClickListener {
+                                        AlertDialog.Builder(this@MainActivity)
+                                            .setTitle(result.name)
+                                            .setMessage(listOfNotNull(result.category, result.address, "Google Maps result. Road side and entrance are not confirmed here.").joinToString(". "))
+                                            .setPositiveButton("Open Google Maps") { _, _ ->
+                                                val query = Uri.encode(listOfNotNull(result.name, result.address).joinToString(" "))
+                                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/search/?api=1&query=$query")))
+                                            }
+                                            .setNegativeButton("Close", null)
+                                            .show()
+                                    }
+                                }
+                                googleRows.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+                            }
+                        }
+                    }
+                }
+                addButton(if (mode == 2) "Search Google Places again" else "Search Google Places here") { lookupGoogle() }
+                if (mode == 2) lookupGoogle()
+            }
+            addText(if (places.isEmpty()) "No saved mapped places within this radius." else "Saved offline places:")
             places.forEach { item ->
                 val source = placeSourceLabel(item.place).takeIf { it.isNotBlank() }?.let { ", source: $it" }.orEmpty()
                 addButton("${item.place.name}, ${item.place.category}$source, ${item.side}, ${item.distance.roundToInt()} metres") {
@@ -1260,6 +1315,33 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun showSettings() {
         page("Settings", "Back to Main Menu", ::showHome) {
             addText("Adjust exploration controls and speech.")
+            addText("Google Places searches around your virtual position and needs internet access. It is off by default. Online results stay separate from saved map places. Your imported Google Places remain available offline. Restart the app after replacing a key already used in this session.")
+            addSpinner("Google Places mode", listOf("Offline maps only", "Manual Google search", "Automatic Google search with offline fallback"), prefs.getInt("google_places_mode", 0).coerceIn(0, 2)) {
+                prefs.edit().putInt("google_places_mode", it).apply()
+            }
+            addSwitch("Allow Google Places API requests", "google_places_enabled", false)
+            val googleKeyStatus = addText(if (GooglePlacesKeyStore.load(this@MainActivity).isNullOrBlank()) "Google API key: not saved." else "Google API key: saved securely on this phone.")
+            val googleKeyInput = addEdit("Google Places API key")
+            googleKeyInput.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            addButton("Save Google API key") {
+                val key = googleKeyInput.text.toString().trim()
+                if (key.isBlank()) {
+                    googleKeyStatus.text = "Enter a Google Places API key first."
+                } else if (GooglePlacesKeyStore.save(this@MainActivity, key)) {
+                    googleKeyInput.text.clear()
+                    googleKeyStatus.text = "Google API key saved securely on this phone. It is not included in map backups."
+                    announce(googleKeyStatus.text.toString(), googleKeyStatus)
+                } else {
+                    googleKeyStatus.text = "Could not securely save the key on this phone."
+                    announce(googleKeyStatus.text.toString(), googleKeyStatus)
+                }
+            }
+            addButton("Delete saved Google API key") {
+                GooglePlacesKeyStore.delete(this@MainActivity)
+                prefs.edit().putBoolean("google_places_enabled", false).putInt("google_places_mode", 0).apply()
+                googleKeyStatus.text = "Google API key deleted. Offline maps remain available."
+                announce(googleKeyStatus.text.toString(), googleKeyStatus)
+            }
             val movement = addSpinner("Movement mode", listOf("Step by step", "Place to place", "Junction to junction", "Automatic walking"), prefs.getInt("movement_mode", 0)) { prefs.edit().putInt("movement_mode", it).apply() }
             movement.contentDescription = "Default movement mode"
             val distanceLabel = addText("Step distance: ${stepMetres()} metres.")
@@ -1306,7 +1388,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 override fun onStopTrackingTouch(s: SeekBar?) = Unit
             })
             addButton("Reset Settings") {
-                listOf("movement_mode", "step_distance", "announce_places", "stop_junctions", "speech_enabled", "walk_speed", "radius", "speech_rate", "speech_pitch").forEach { prefs.edit().remove(it).apply() }
+                listOf("movement_mode", "step_distance", "announce_places", "stop_junctions", "speech_enabled", "walk_speed", "radius", "speech_rate", "speech_pitch", "google_places_mode", "google_places_enabled").forEach { prefs.edit().remove(it).apply() }
                 showSettings()
             }
         }
