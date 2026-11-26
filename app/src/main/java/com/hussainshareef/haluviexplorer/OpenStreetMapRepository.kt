@@ -165,13 +165,17 @@ class OpenStreetMapRepository(context: Context) {
         val box = "$south,$west,$north,$east"
         val roadQuery = """
             [out:json][timeout:30];
-            way[highway~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian|footway|path|track|road|steps|cycleway|bridleway)$"]($box);
+            way[highway~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian|footway|path|track|road|steps|cycleway|bridleway|corridor|platform|raceway)$"]($box);
             out body geom;
         """.trimIndent()
         val placeQuery = """
             [out:json][timeout:30];
             (nwr[amenity]($box); nwr[shop]($box); nwr[tourism]($box); nwr[leisure]($box);
-             nwr[healthcare]($box); nwr[office]($box); nwr[education]($box););
+             nwr[healthcare]($box); nwr[office]($box); nwr[education]($box);
+             nwr[public_transport]($box); nwr[aeroway]($box); nwr[man_made]($box);
+             nwr[craft]($box); nwr[historic]($box); nwr[natural]($box);
+             nwr[emergency]($box); nwr[barrier]($box); nwr[military]($box);
+             nwr[power]($box); nwr[railway]($box); nwr[waterway]($box););
             out center tags;
         """.trimIndent()
         var lastFailure: Throwable? = null

@@ -2,11 +2,16 @@ package com.hussainshareef.haluviexplorer
 
 import android.content.Context
 import org.json.JSONObject
+import java.io.FileOutputStream
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 data class StoredMapSummary(
     val file: File, val islandName: String, val sourceIslandKey: String, val roadCount: Int,
-    val placeCount: Int, val downloadedAt: Long, val length: Long, val modified: Long
+    val placeCount: Int, val downloadedAt: Long, val length: Long, val modified: Long,
+    val unlocatedPlaceCount: Int = 0
 )
 
 class MapStore(context: Context) {
@@ -15,7 +20,7 @@ class MapStore(context: Context) {
     @Volatile private var cachedSummaries: List<StoredMapSummary>? = null
     fun save(map: MapData): File {
         val file = File(directory, "${map.saveName()}.json")
-        file.writeText(map.toJson().toString())
+        writeAtomic(file, map.toJson().toString())
         val current = cachedSummaries
         if (current == null) indexFile.delete() else {
             cachedSummaries = (current.filterNot { it.file.name == file.name } + summary(file, map)).sortedBy { it.file.name }
@@ -37,7 +42,7 @@ class MapStore(context: Context) {
         val oldMap = existing?.let { runCatching { load(it.file) }.getOrNull() }
         val merged = mergeDownloadedNetwork(oldMap, network)
         val target = existing?.file ?: File(directory, "${merged.saveName()}.json")
-        target.writeText(merged.toJson().toString())
+        writeAtomic(target, merged.toJson().toString())
         cachedSummaries = (previous.filterNot { it.file.name == target.name } + summary(target, merged)).sortedBy { it.file.name }
         writeIndex(cachedSummaries!!)
         return target to merged
@@ -66,6 +71,7 @@ class MapStore(context: Context) {
         val batch = HaluviBackupImporter.parse(text)
         var roadsAdded = 0
         var placesAdded = 0
+        var unlocatedPlacesAdded = 0
         var mapsProcessed = 0
         val previousSummaries = summaries()
         val existing = previousSummaries.associateBy { normalizeIslandIdentity(it.sourceIslandKey) }
@@ -76,26 +82,29 @@ class MapStore(context: Context) {
             val oldMap = existingFile?.let { runCatching { load(it) }.getOrNull() }
             val oldRoads = oldMap?.roads.orEmpty()
             val oldPlaces = oldMap?.places.orEmpty()
+            val oldUnlocatedPlaces = oldMap?.unlocatedPlaces.orEmpty()
             // Keep downloaded OSM geometry first: an identical backup line must not replace its real node IDs.
             val roads = (oldRoads + incoming.roads).distinctBy { roadGeometryKey(it.points) }
             val places = mergePlacesPreservingSources(oldPlaces, incoming.places)
+            val unlocatedPlaces = mergeUnlocatedPreservingSources(oldUnlocatedPlaces, incoming.unlocatedPlaces)
             roadsAdded += roads.size - oldRoads.size
             placesAdded += places.size - oldPlaces.size
+            unlocatedPlacesAdded += unlocatedPlaces.size - oldUnlocatedPlaces.size
             val merged = MapData(incoming.islandName, maxOf(oldMap?.downloadedAt ?: 0L, incoming.downloadedAt), roads, places,
-                incoming.sourceIslandKey, roads.isNotEmpty() && roads.all { it.nodeIdsVerified })
+                incoming.sourceIslandKey, roads.isNotEmpty() && roads.all { it.nodeIdsVerified }, unlocatedPlaces)
             val target = existingFile ?: File(directory, "${merged.saveName()}.json")
-            target.writeText(merged.toJson().toString())
+            writeAtomic(target, merged.toJson().toString())
             replacements[incoming.sourceIslandKey] = summary(target, merged)
             mapsProcessed++
         }
         val replacementKeys = replacements.keys.map(::normalizeIslandIdentity).toSet()
         cachedSummaries = (previousSummaries.filterNot { normalizeIslandIdentity(it.sourceIslandKey) in replacementKeys } + replacements.values).sortedBy { it.file.name }
         writeIndex(cachedSummaries!!)
-        return MapImportSummary(mapsProcessed, roadsAdded, placesAdded, batch.unsupportedPlacesSkipped)
+        return MapImportSummary(mapsProcessed, roadsAdded, placesAdded, batch.unsupportedPlacesSkipped, unlocatedPlacesAdded)
     }
 
     private fun summary(file: File, map: MapData) = StoredMapSummary(file, map.islandName, map.sourceIslandKey,
-        map.roads.size, map.places.size, map.downloadedAt, file.length(), file.lastModified())
+        map.roads.size, map.places.size, map.downloadedAt, file.length(), file.lastModified(), map.unlocatedPlaces.size)
 
     private fun matches(files: List<File>, values: List<StoredMapSummary>) = files.size == values.size &&
         files.all { file -> values.any { it.file.name == file.name && it.length == file.length() && it.modified == file.lastModified() } }
@@ -108,7 +117,7 @@ class MapStore(context: Context) {
             val o = array.optJSONObject(i) ?: return@mapNotNull null
             val file = byName[o.optString("file")] ?: return@mapNotNull null
             StoredMapSummary(file, o.optString("name"), o.optString("key"), o.optInt("roads"), o.optInt("places"),
-                o.optLong("downloaded"), o.optLong("length"), o.optLong("modified"))
+                o.optLong("downloaded"), o.optLong("length"), o.optLong("modified"), o.optInt("unlocatedPlaces"))
         }
         values.takeIf { matches(files, it) }
     }.getOrNull()
@@ -118,19 +127,54 @@ class MapStore(context: Context) {
             val json = JSONObject().put("maps", org.json.JSONArray().apply { values.forEach { s ->
                 put(JSONObject().put("file", s.file.name).put("name", s.islandName).put("key", s.sourceIslandKey)
                     .put("roads", s.roadCount).put("places", s.placeCount).put("downloaded", s.downloadedAt)
-                    .put("length", s.file.length()).put("modified", s.file.lastModified()))
+                    .put("length", s.file.length()).put("modified", s.file.lastModified()).put("unlocatedPlaces", s.unlocatedPlaceCount))
             } })
-            indexFile.writeText(json.toString())
+            writeAtomic(indexFile, json.toString())
+        }
+    }
+
+    /** Write a complete replacement before swapping it into the visible map/index filename. */
+    private fun writeAtomic(target: File, content: String) {
+        val parent = target.parentFile ?: error("Map storage directory is unavailable.")
+        if (!parent.exists() && !parent.mkdirs()) error("Map storage directory could not be created.")
+        val temp = File(parent, "${target.name}.${System.nanoTime()}.tmp")
+        FileOutputStream(temp).use { stream ->
+            stream.write(content.toByteArray(Charsets.UTF_8))
+            stream.fd.sync()
+        }
+        try {
+            Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     }
 }
 
 data class MapImportSummary(val mapsProcessed: Int, val roadsAdded: Int, val placesAdded: Int,
-    val unsupportedPlacesSkipped: Int)
+    val unsupportedPlacesSkipped: Int, val unlocatedPlacesAdded: Int = 0)
 
 /** Only repeated records with the same source and stable ID are collapsed; cross-source places remain distinct. */
 internal fun mergePlacesPreservingSources(existing: List<Place>, incoming: List<Place>): List<Place> {
     val merged = ArrayList<Place>(existing.size + incoming.size)
+    merged.addAll(existing)
+    for (place in incoming) {
+        val duplicateIndex = merged.indexOfFirst { it.id == place.id && it.source.equals(place.source, ignoreCase = true) }
+        if (duplicateIndex < 0) merged.add(place)
+        else {
+            // Re-import/update can enrich an older place row with its address/provider fields
+            // without removing the row or changing any other saved place record.
+            val old = merged[duplicateIndex]
+            if (old.sourceData.isBlank() && place.sourceData.isNotBlank()) {
+                merged[duplicateIndex] = old.copy(sourceData = place.sourceData)
+            }
+        }
+    }
+    return merged
+}
+
+/** Keep unlocated provider records available for review instead of dropping them during import. */
+internal fun mergeUnlocatedPreservingSources(existing: List<UnlocatedPlace>, incoming: List<UnlocatedPlace>): List<UnlocatedPlace> {
+    val merged = ArrayList<UnlocatedPlace>(existing.size + incoming.size)
     merged.addAll(existing)
     for (place in incoming) {
         val duplicate = merged.any { it.id == place.id && it.source.equals(place.source, ignoreCase = true) }
@@ -145,7 +189,8 @@ internal fun mergeDownloadedNetwork(existing: MapData?, network: MapData): MapDa
     val retainedRoads = existing?.roads.orEmpty().filter { roadGeometryKey(it.points) !in networkGeometry }
     val roads = (network.roads + retainedRoads).distinctBy { roadGeometryKey(it.points) }
     val places = mergePlacesPreservingSources(existing?.places.orEmpty(), network.places)
-    return network.copy(roads = roads, places = places,
+    val unlocatedPlaces = mergeUnlocatedPreservingSources(existing?.unlocatedPlaces.orEmpty(), network.unlocatedPlaces)
+    return network.copy(roads = roads, places = places, unlocatedPlaces = unlocatedPlaces,
         connectivityVerified = roads.isNotEmpty() && roads.all { it.nodeIdsVerified })
 }
 

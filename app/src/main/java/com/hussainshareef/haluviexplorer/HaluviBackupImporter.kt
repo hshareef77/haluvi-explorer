@@ -6,7 +6,8 @@ import kotlin.math.roundToLong
 
 data class BackupImportBatch(
     val maps: List<MapData>,
-    val unsupportedPlacesSkipped: Int
+    val unsupportedPlacesSkipped: Int,
+    val unlocatedPlacesPreserved: Int = 0
 )
 
 /** Reads the JSON map/backup format exported by Haluvi Navigation (v2). */
@@ -58,9 +59,17 @@ object HaluviBackupImporter {
 
         var unsupportedSkipped = 0
         val placesByIsland = linkedMapOf<String, MutableList<Place>>()
+        val unlocatedByIsland = linkedMapOf<String, MutableList<UnlocatedPlace>>()
         val placeRecords = root.optJSONArray("locations") ?: JSONArray()
         for (i in 0 until placeRecords.length()) {
-            val item = placeRecords.optJSONObject(i) ?: continue
+            val raw = placeRecords.opt(i)
+            val item = raw as? JSONObject
+            if (item == null) {
+                val key = "imported-unassigned"
+                unlocatedByIsland.getOrPut(key) { mutableListOf() } += UnlocatedPlace(
+                    "backup:$key:$i", "", "", "unknown", "Backup entry is not a structured place record.", raw?.toString().orEmpty())
+                continue
+            }
             val source = item.optString("source", "manual").ifBlank { "manual" }
             val islandName = item.optString("islandName").trim()
             val key = item.optString("islandKey").ifBlank {
@@ -68,16 +77,28 @@ object HaluviBackupImporter {
             }
             val lat = item.optDouble("lat", Double.NaN)
             val lon = item.optDouble("lon", Double.NaN)
-            if (!validCoordinate(lat, lon)) { unsupportedSkipped++; continue }
             val name = item.optString("name").trim()
-            if (name.isBlank()) { unsupportedSkipped++; continue }
             val category = item.optString("categoryId").ifBlank { "other" }
             val id = item.optString("id").ifBlank { "backup:$key:$i" }
-            placesByIsland.getOrPut(key) { mutableListOf() } += Place(id, name, category, GeoPoint(lat, lon), false, source)
+            if (!validCoordinate(lat, lon) || name.isBlank()) {
+                val reasons = buildList {
+                    if (!validCoordinate(lat, lon)) add("No usable coordinates")
+                    if (name.isBlank()) add("No place name")
+                }
+                unlocatedByIsland.getOrPut(key) { mutableListOf() } += UnlocatedPlace(
+                    id, name, category, source, reasons.joinToString(" and ") + ".", item.toString())
+                if (islandName.isNotBlank()) displayNames[key] = islandName
+                continue
+            }
+            // Preserve the original provider record locally. Explorer can use any road/address
+            // hints it contains, and a later import must not silently discard those fields.
+            val place = Place(id, name, category, GeoPoint(lat, lon), false, source, item.toString())
+            place.roadAddressHints()
+            placesByIsland.getOrPut(key) { mutableListOf() } += place
             if (islandName.isNotBlank()) displayNames[key] = islandName
         }
 
-        val keys = (roadsByIsland.keys + placesByIsland.keys).distinct()
+        val keys = (roadsByIsland.keys + placesByIsland.keys + unlocatedByIsland.keys).distinct()
         val maps = keys.map { key ->
             MapData(
                 islandName = displayNames[key].orEmpty().ifBlank { key.substringAfter(':', key) },
@@ -85,11 +106,12 @@ object HaluviBackupImporter {
                 roads = splitRoadsAtSharedNodes(roadsByIsland[key].orEmpty().filter { it.points.size >= 2 && it.lengthMeters > 0.5 }),
                 places = placesByIsland[key].orEmpty(),
                 sourceIslandKey = key,
-                connectivityVerified = false
+                connectivityVerified = false,
+                unlocatedPlaces = unlocatedByIsland[key].orEmpty()
             )
-        }.filter { it.roads.isNotEmpty() || it.places.isNotEmpty() }
+        }.filter { it.roads.isNotEmpty() || it.places.isNotEmpty() || it.unlocatedPlaces.isNotEmpty() }
         require(maps.isNotEmpty()) { "No reusable road or place data was found in this backup." }
-        return BackupImportBatch(maps, unsupportedSkipped)
+        return BackupImportBatch(maps, unsupportedSkipped, maps.sumOf { it.unlocatedPlaces.size })
     }
 
     private fun parseCoordinatePairs(array: JSONArray?): List<GeoPoint>? {

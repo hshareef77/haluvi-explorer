@@ -3,8 +3,29 @@ package com.hussainshareef.haluviexplorer
 import kotlin.math.*
 
 data class RoadConnection(val road: Road, val sharedNode: Long, val joinIndex: Int, val bearingOut: Double, val turn: Double)
-data class NearbyPlace(val place: Place, val distance: Double, val roadDistance: Double, val side: String, val alongDistance: Double)
+data class NearbyPlace(
+    val place: Place,
+    val distance: Double,
+    val roadDistance: Double,
+    val side: String,
+    val alongDistance: Double,
+    /** Index in the original map list, so separate records with identical IDs remain traversable. */
+    val recordIndex: Int = -1,
+    /** Describes whether this road association comes from address text or only geometry. */
+    val association: String = "estimated geometry"
+)
 data class RoadCrossing(val roadName: String, val side: String, val verified: Boolean, val alongDistance: Double)
+
+private data class RoadPlaceProjection(
+    val recordIndex: Int,
+    val place: Place,
+    val alongDistance: Double,
+    val foot: GeoPoint,
+    val roadDistance: Double,
+    val segmentIndex: Int,
+    val addressMatched: Boolean,
+    val hasAddressHint: Boolean
+)
 
 class ExplorerEngine(private val map: MapData) {
     var road: Road? = null
@@ -22,8 +43,10 @@ class ExplorerEngine(private val map: MapData) {
     private var arrivedNodeId: Long? = null
     private val visitedPlaces = linkedSetOf<String>()
     private var placeNavigationRoadId: String? = null
-    private var placeNavigationPlaceId: String? = null
+    private var placeNavigationRecordIndex: Int? = null
     private var placeNavigationProgress: Double? = null
+    /** The expensive place-to-road projection is computed once per selected road, then reused by every control. */
+    private val placeProjectionCache = HashMap<String, List<RoadPlaceProjection>>()
 
     fun start(onRoad: Road, atProgress: Double, faceAlongRoad: Boolean = true) {
         clearPlaceNavigationCursor()
@@ -204,16 +227,13 @@ class ExplorerEngine(private val map: MapData) {
     fun nearbyPlaces(radiusMeters: Double): List<NearbyPlace> {
         val current = road ?: return emptyList()
         val at = position() ?: return emptyList()
-        return map.places.mapNotNull { p ->
-            val (along, foot, _) = projectToLine(current.points, p.point)
-            val d = distanceMeters(at, p.point)
+        return projectionsFor(current).mapNotNull { item ->
+            val d = distanceMeters(at, item.place.point)
             if (d > radiusMeters) null else {
-                val path = pointAt(current, along)
-                val segmentBearing = bearingAt(current, along, travelSign)
-                val toPlace = bearingDegrees(path, p.point)
+                val toPlace = bearingDegrees(item.foot, item.place.point)
                 val relative = signedAngle(facingBearing, toPlace)
                 val side = when { d < 1.0 -> "nearby"; abs(relative) <= 55 -> "ahead"; abs(relative) >= 125 -> "behind"; relative < 0 -> "left"; else -> "right" }
-                NearbyPlace(p, d, distanceMeters(foot, p.point), side, along)
+                NearbyPlace(item.place, d, item.roadDistance, side, item.alongDistance, item.recordIndex, item.association())
             }
         }.sortedBy { it.distance }
     }
@@ -221,7 +241,6 @@ class ExplorerEngine(private val map: MapData) {
     fun nextPlace(): NearbyPlace? {
         val current = road ?: return null
         val places = placesOnCurrentRoad(current, travelSign)
-            .filter { it.roadDistance <= 40.0 }
             .sortedWith(placeOrder(travelSign))
         val cursor = currentPlaceCursorIndex(current, places)
         if (cursor != null) return places.getOrNull(cursor + 1)
@@ -232,18 +251,58 @@ class ExplorerEngine(private val map: MapData) {
         val current = road ?: return null
         val direction = -travelSign
         val places = placesOnCurrentRoad(current, travelSign, facingBearing)
-            .filter { it.roadDistance <= 40.0 }
             .sortedWith(placeOrder(travelSign))
         val cursor = currentPlaceCursorIndex(current, places)
         if (cursor != null) return places.getOrNull(cursor - 1)
         return places.firstOrNull { (it.alongDistance - progressMeters) * direction >= 0.1 }
     }
 
+    /** All saved places that can be associated with this route, without a distance cut-off. */
+    fun placesAlongCurrentRoad(): List<NearbyPlace> {
+        val current = road ?: return emptyList()
+        return placesOnCurrentRoad(current, travelSign).sortedWith(placeOrder(1))
+    }
+
+    /** Finds every road-associated place crossed during one movement, even if the step exceeds its 4 m vicinity. */
+    fun placesPassedBetween(fromProgress: Double, toProgress: Double, keepFacing: Boolean = false): List<NearbyPlace> {
+        val current = road ?: return emptyList()
+        if (abs(toProgress - fromProgress) < 0.01) return emptyList()
+        val low = min(fromProgress, toProgress)
+        val high = max(fromProgress, toProgress)
+        val direction = if (toProgress >= fromProgress) 1 else -1
+        val at = pointAt(current, toProgress)
+        return placesOnCurrentRoad(current, direction, if (keepFacing) facingBearing else null)
+            .filter { it.alongDistance > low + 0.01 && it.alongDistance <= high + 0.01 }
+            .map { it.copy(distance = distanceMeters(at, it.place.point)) }
+            .sortedWith(placeOrder(direction))
+    }
+
     /** Records the selected place so repeated next/previous actions traverse even co-located records. */
     fun rememberPlaceNavigation(place: Place) {
         val current = road ?: return
+        val index = map.places.indexOfFirst { it === place || it == place }
+        rememberPlaceNavigation(current, place, index)
+    }
+
+    /** Records the exact map row, including when two source records share the same ID and coordinates. */
+    fun rememberPlaceNavigation(place: NearbyPlace) {
+        val current = road ?: return
+        rememberPlaceNavigation(current, place.place, place.recordIndex)
+    }
+
+    fun placeNavigationRecordIndex(): Int? = placeNavigationRecordIndex
+
+    fun restorePlaceNavigation(recordIndex: Int?) {
+        val current = road ?: return
+        if (recordIndex == null || recordIndex !in map.places.indices) return
         placeNavigationRoadId = current.id
-        placeNavigationPlaceId = place.id
+        placeNavigationRecordIndex = recordIndex
+        placeNavigationProgress = progressMeters
+    }
+
+    private fun rememberPlaceNavigation(current: Road, place: Place, recordIndex: Int) {
+        placeNavigationRoadId = current.id
+        placeNavigationRecordIndex = recordIndex.takeIf { it >= 0 }
         placeNavigationProgress = progressMeters
     }
 
@@ -259,7 +318,7 @@ class ExplorerEngine(private val map: MapData) {
         val direction = if (target >= from) 1 else -1
         val cumulative = cumulativeDistances(current)
         val results = mutableListOf<RoadCrossing>()
-        val seen = mutableSetOf<Pair<Long, String>>()
+        val seen = mutableSetOf<Triple<Long, String, String>>()
         for (index in current.nodeIds.indices) {
             val along = cumulative[index]
             if (along <= low + 0.5 || along > high + 0.5) continue
@@ -274,10 +333,15 @@ class ExplorerEngine(private val map: MapData) {
                         candidate.endNode == nodeId && candidate.points.size > 1 -> candidate.points[candidate.points.lastIndex - 1]
                         else -> null
                     } ?: return@mapNotNull null
-                    val key = nodeId to candidate.name.lowercase()
-                    if (!seen.add(key)) return@mapNotNull null
                     val delta = signedAngle(currentBearing, bearingDegrees(atNode, outward))
-                    RoadCrossing(candidate.name, if (delta < 0.0) "left" else "right",
+                    val side = when {
+                        abs(delta) <= 35.0 -> "straight"
+                        delta < 0.0 -> "left"
+                        else -> "right"
+                    }
+                    val key = Triple(nodeId, candidate.name.trim().lowercase(), side)
+                    if (!seen.add(key)) return@mapNotNull null
+                    RoadCrossing(candidate.name, side,
                         current.nodeIdsVerified && candidate.nodeIdsVerified, along)
                 }.forEach(results::add)
         }
@@ -300,22 +364,31 @@ class ExplorerEngine(private val map: MapData) {
         return "${r.name}. Facing ${facing()}. $next in ${remainingToDecisionPoint().roundToInt()} metres.$endpointKind"
     }
 
-    fun markVisited(place: Place) { visitedPlaces += place.id }
+    fun markVisited(place: Place) { visitedPlaces += place.recordIdentity() }
+    fun markVisited(place: NearbyPlace) {
+        val p = place.place
+        visitedPlaces += "${place.recordIndex}|${p.source}|${p.id}|${p.name}|${p.category}|${p.point.lat}|${p.point.lon}"
+    }
     fun visitedPlaceCount(): Int = visitedPlaces.size
 
     private fun placeOrder(direction: Int): Comparator<NearbyPlace> =
-        compareBy<NearbyPlace> { it.alongDistance * direction }.thenBy { it.place.name.lowercase() }.thenBy { it.place.id }
+        compareBy<NearbyPlace> { it.alongDistance * direction }.thenBy { it.place.name.lowercase() }
+            .thenBy { it.place.source.lowercase() }.thenBy { it.place.id }.thenBy { it.recordIndex }
 
     private fun currentPlaceCursorIndex(current: Road, ordered: List<NearbyPlace>): Int? {
         if (placeNavigationRoadId != current.id || abs((placeNavigationProgress ?: Double.MAX_VALUE) - progressMeters) > 1.5) return null
-        return ordered.indexOfFirst { it.place.id == placeNavigationPlaceId }.takeIf { it >= 0 }
+        val exactRecord = placeNavigationRecordIndex?.let { index -> ordered.indexOfFirst { it.recordIndex == index } }
+        if (exactRecord != null && exactRecord >= 0) return exactRecord
+        return null
     }
 
     private fun clearPlaceNavigationCursor() {
         placeNavigationRoadId = null
-        placeNavigationPlaceId = null
+        placeNavigationRecordIndex = null
         placeNavigationProgress = null
     }
+
+    private fun Place.recordIdentity(): String = "$source|$id|$name|$category|${point.lat}|${point.lon}"
 
     private fun bearingAt(r: Road, progress: Double, sign: Int): Double {
         val projected = pointAt(r, progress)
@@ -326,22 +399,43 @@ class ExplorerEngine(private val map: MapData) {
     }
 
     private fun placesOnCurrentRoad(current: Road, direction: Int, facingOverride: Double? = null): List<NearbyPlace> {
-        val at = position() ?: return emptyList()
-        return map.places.mapNotNull { place ->
-            val (along, foot, _) = projectToLine(current.points, place.point)
-            val offRoad = distanceMeters(foot, place.point)
-            if (offRoad > 40.0) null else {
-                val relative = signedAngle(facingOverride ?: bearingAt(current, along, direction), bearingDegrees(foot, place.point))
+        return projectionsFor(current).asSequence().filter { !it.hasAddressHint || it.addressMatched }.map { item ->
+                val bearing = bearingDegrees(current.points[item.segmentIndex], current.points[item.segmentIndex + 1])
+                val travelBearing = if (direction >= 0) bearing else (bearing + 180.0) % 360.0
+                val relative = signedAngle(facingOverride ?: travelBearing, bearingDegrees(item.foot, item.place.point))
                 val side = when {
-                    offRoad < 1.0 -> "nearby"
+                    item.roadDistance < 1.0 -> "nearby"
                     abs(relative) <= 55 -> "ahead"
                     abs(relative) >= 125 -> "behind"
                     relative < 0 -> "left"
                     else -> "right"
                 }
-                NearbyPlace(place, distanceMeters(at, place.point), offRoad, side, along)
-            }
+                NearbyPlace(item.place, abs(item.alongDistance - progressMeters), item.roadDistance, side,
+                    item.alongDistance, item.recordIndex, item.association())
+        }.toList()
+    }
+
+    private fun projectionsFor(current: Road): List<RoadPlaceProjection> = placeProjectionCache.getOrPut(current.id) {
+        map.places.mapIndexedNotNull { index, place ->
+            val hints = place.roadAddressHints()
+            val addressMatched = hints.any { roadNameInAddress(current.name, it) }
+            val (along, foot, segmentIndex) = projectToLine(current.points, place.point)
+            RoadPlaceProjection(index, place, along, foot, distanceMeters(foot, place.point), segmentIndex, addressMatched, hints.isNotEmpty())
         }
+    }
+
+    private fun RoadPlaceProjection.association(): String = when {
+        addressMatched -> "address names this road"
+        hasAddressHint -> "address names another road"
+        roadDistance <= 40.0 -> "nearby geometry estimate"
+        else -> "distant nearest-road estimate"
+    }
+
+    private fun roadNameInAddress(roadName: String, address: String): Boolean {
+        fun normalize(value: String) = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        val road = normalize(roadName)
+        val text = normalize(address)
+        return road.isNotBlank() && " $text ".contains(" $road ")
     }
 
     private fun nextDecisionNodeIndex(current: Road): Int? {
@@ -386,22 +480,33 @@ class ExplorerEngine(private val map: MapData) {
     }
 
     private fun projectToLine(points: List<GeoPoint>, p: GeoPoint): Triple<Double, GeoPoint, Int> {
-        var bestDistance = Double.MAX_VALUE; var bestAlong = 0.0; var bestPoint = points.first(); var bestIndex = 0; var prefix = 0.0
+        // Compare candidates in a local equirectangular plane, then callers calculate one
+        // final great-circle distance. This avoids a trigonometric distance call per segment
+        // for every imported Google/OSM place, which was the hot path behind slow place steps.
+        val scaleX = cos(Math.toRadians(p.lat)) * 111_320.0
+        val scaleY = 111_320.0
+        val px = p.lon * scaleX
+        val py = p.lat * scaleY
+        var bestSquaredDistance = Double.MAX_VALUE
+        var bestAlong = 0.0
+        var bestPoint = points.first()
+        var bestIndex = 0
+        var prefix = 0.0
         for (i in 0 until points.lastIndex) {
             val a = points[i]; val b = points[i + 1]
-            val meanLat = Math.toRadians((a.lat + b.lat + p.lat) / 3.0)
-            val scaleX = cos(meanLat) * 111_320.0; val scaleY = 111_320.0
             val ax = a.lon * scaleX; val ay = a.lat * scaleY; val bx = b.lon * scaleX; val by = b.lat * scaleY
-            val px = p.lon * scaleX; val py = p.lat * scaleY
             val dx = bx - ax; val dy = by - ay
             val fraction = if (dx * dx + dy * dy == 0.0) 0.0 else (((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)).coerceIn(0.0, 1.0)
             val candidate = GeoPoint(a.lat + (b.lat - a.lat) * fraction, a.lon + (b.lon - a.lon) * fraction)
-            val distance = distanceMeters(candidate, p)
-            if (distance < bestDistance) {
-                bestDistance = distance; bestPoint = candidate; bestIndex = i
-                bestAlong = prefix + distanceMeters(a, b) * fraction
+            val offsetX = px - (ax + dx * fraction)
+            val offsetY = py - (ay + dy * fraction)
+            val squaredDistance = offsetX * offsetX + offsetY * offsetY
+            val segmentLength = sqrt(dx * dx + dy * dy)
+            if (squaredDistance < bestSquaredDistance) {
+                bestSquaredDistance = squaredDistance; bestPoint = candidate; bestIndex = i
+                bestAlong = prefix + segmentLength * fraction
             }
-            prefix += distanceMeters(a, b)
+            prefix += segmentLength
         }
         return Triple(bestAlong, bestPoint, bestIndex)
     }

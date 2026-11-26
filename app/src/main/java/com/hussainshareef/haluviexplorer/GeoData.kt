@@ -28,7 +28,47 @@ data class Place(
     val category: String,
     val point: GeoPoint,
     val entranceVerified: Boolean,
-    val source: String = ""
+    val source: String = "",
+    /** Original place record/tags retained locally so provider address and road hints are not discarded. */
+    val sourceData: String = ""
+) {
+    private val cachedRoadAddressHints: List<String> by lazy(LazyThreadSafetyMode.PUBLICATION) { parseRoadAddressHints() }
+
+    fun roadAddressHints(): List<String> = cachedRoadAddressHints
+
+    private fun parseRoadAddressHints(): List<String> {
+        if (sourceData.isBlank()) return emptyList()
+        return runCatching {
+        val root = JSONObject(sourceData)
+        val keys = setOf("road", "roadname", "road_name", "street", "streetname", "street_name", "addr:street", "route", "vicinity", "formattedaddress", "formatted_address", "address", "streetaddress", "street_address", "addressline", "address_line")
+        val values = mutableListOf<String>()
+        fun visit(value: Any?, key: String = "") {
+            when (value) {
+                is JSONObject -> {
+                    val types = value.optJSONArray("types")
+                    if (types != null && (0 until types.length()).any { types.optString(it) == "route" }) {
+                        listOf("long_name", "short_name").mapNotNull { value.optString(it).takeIf(String::isNotBlank) }.forEach(values::add)
+                    }
+                    value.keys().forEach { child -> visit(value.opt(child), child.lowercase().replace(Regex("[^a-z0-9]"), "")) }
+                }
+                is JSONArray -> for (i in 0 until value.length()) visit(value.opt(i), key)
+                is String -> if (key in keys.map { it.replace(Regex("[^a-z0-9]"), "") }) values += value
+            }
+        }
+        visit(root)
+        values
+        }.getOrDefault(emptyList())
+    }
+}
+
+/** A saved place record kept intact when it has no valid map coordinate or usable display name. */
+data class UnlocatedPlace(
+    val id: String,
+    val name: String,
+    val category: String,
+    val source: String,
+    val reason: String,
+    val sourceData: String = ""
 )
 
 data class MapData(
@@ -37,7 +77,8 @@ data class MapData(
     val roads: List<Road>,
     val places: List<Place>,
     val sourceIslandKey: String = "",
-    val connectivityVerified: Boolean = false
+    val connectivityVerified: Boolean = false,
+    val unlocatedPlaces: List<UnlocatedPlace> = emptyList()
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("islandName", islandName)
@@ -56,7 +97,14 @@ data class MapData(
         put("places", JSONArray().apply {
             places.forEach { place -> put(JSONObject().apply {
                 put("id", place.id); put("name", place.name); put("category", place.category)
-                put("lat", place.point.lat); put("lon", place.point.lon); put("entranceVerified", place.entranceVerified); put("source", place.source)
+                put("lat", place.point.lat); put("lon", place.point.lon); put("entranceVerified", place.entranceVerified)
+                put("source", place.source); put("sourceData", place.sourceData)
+            }) }
+        })
+        put("unlocatedPlaces", JSONArray().apply {
+            unlocatedPlaces.forEach { place -> put(JSONObject().apply {
+                put("id", place.id); put("name", place.name); put("category", place.category)
+                put("source", place.source); put("reason", place.reason); put("sourceData", place.sourceData)
             }) }
         })
     }
@@ -66,7 +114,11 @@ data class MapData(
 
     companion object {
         private val roadKinds = setOf("motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "living_street", "service", "pedestrian", "footway", "path", "track", "steps", "cycleway", "road", "bridleway", "corridor", "platform", "raceway")
-        private val placeKeys = listOf("amenity", "shop", "tourism", "leisure", "healthcare", "office", "education")
+        private val placeKeys = listOf(
+            "amenity", "shop", "tourism", "leisure", "healthcare", "office", "education",
+            "public_transport", "aeroway", "man_made", "craft", "historic", "natural",
+            "emergency", "barrier", "military", "power", "railway", "waterway"
+        )
 
         fun fromJson(json: JSONObject): MapData {
             val roads = buildList {
@@ -87,13 +139,23 @@ data class MapData(
                 val array = json.optJSONArray("places") ?: JSONArray()
                 for (i in 0 until array.length()) {
                     val item = array.optJSONObject(i) ?: continue
-                    add(Place(item.optString("id"), item.optString("name"), item.optString("category"),
-                        GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified"), item.optString("source")))
+                    val place = Place(item.optString("id"), item.optString("name"), item.optString("category"),
+                        GeoPoint(item.optDouble("lat"), item.optDouble("lon")), item.optBoolean("entranceVerified"), item.optString("source"), item.optString("sourceData"))
+                    place.roadAddressHints()
+                    add(place)
+                }
+            }
+            val unlocated = buildList {
+                val array = json.optJSONArray("unlocatedPlaces") ?: JSONArray()
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    add(UnlocatedPlace(item.optString("id"), item.optString("name"), item.optString("category"),
+                        item.optString("source"), item.optString("reason"), item.optString("sourceData")))
                 }
             }
             val verified = json.optBoolean("connectivityVerified", false) && roads.isNotEmpty() && roads.all { it.nodeIdsVerified }
             return MapData(json.optString("islandName", "Island"), json.optLong("downloadedAt"), roads, places,
-                json.optString("sourceIslandKey"), verified)
+                json.optString("sourceIslandKey"), verified, unlocated)
         }
 
         fun fromOverpass(islandName: String, response: String): MapData {
@@ -101,6 +163,7 @@ data class MapData(
             val elements = root.optJSONArray("elements") ?: JSONArray()
             val roads = mutableListOf<Road>()
             val places = linkedMapOf<String, Place>()
+            val unlocatedPlaces = mutableListOf<UnlocatedPlace>()
             var allRoadsHaveOsmNodeIds = true
             for (i in 0 until elements.length()) {
                 val e = elements.optJSONObject(i) ?: continue
@@ -124,18 +187,23 @@ data class MapData(
                     val pos = when (type) {
                         "node" -> GeoPoint(e.optDouble("lat", Double.NaN), e.optDouble("lon", Double.NaN))
                         "way" -> e.optJSONObject("center")?.let { GeoPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN)) }
+                        "relation" -> e.optJSONObject("center")?.let { GeoPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN)) }
                         else -> null
-                    } ?: continue
-                    if (!pos.lat.isFinite() || !pos.lon.isFinite()) continue
+                    }
                     val key = placeKeys.firstOrNull { tags.has(it) } ?: continue
                     val display = tags.optString("name").ifBlank { tags.optString("brand").ifBlank { tags.optString(key) } }
+                    if (pos == null || !pos.lat.isFinite() || !pos.lon.isFinite()) {
+                        unlocatedPlaces += UnlocatedPlace("$type$id", display, tags.optString(key), "osm_map", "OpenStreetMap record has no usable point coordinate.", tags.toString())
+                        continue
+                    }
                     val entrance = tags.optString("entrance").isNotBlank() || tags.optString("entrance:yes").isNotBlank()
-                    val place = Place("$type$id", display, tags.optString(key), pos, entrance, "osm_map")
+                    val place = Place("$type$id", display, tags.optString(key), pos, entrance, "osm_map", tags.toString())
+                    place.roadAddressHints()
                     places[place.id] = place
                 }
             }
             return MapData(islandName, System.currentTimeMillis(), splitRoadsAtSharedNodes(roads), places.values.toList(),
-                connectivityVerified = roads.isNotEmpty() && allRoadsHaveOsmNodeIds)
+                connectivityVerified = roads.isNotEmpty() && allRoadsHaveOsmNodeIds, unlocatedPlaces = unlocatedPlaces)
         }
 
         /** Joins the smaller road-only and place-only Overpass responses without issuing one oversized query. */
@@ -192,7 +260,9 @@ data class MapData(
                     val category = tags.optString(key).ifBlank { key }
                     val name = tags.optString("name:en").ifBlank { tags.optString("name") }
                         .ifBlank { tags.optString("brand") }.ifBlank { category.replace('_', ' ') }
-                    add(Place("builtin:$atollCode:place:$i", name, category, GeoPoint(lat, lon), false, "osm_map"))
+                    val place = Place("builtin:$atollCode:place:$i", name, category, GeoPoint(lat, lon), false, "osm_map", tags.toString())
+                    place.roadAddressHints()
+                    add(place)
                 }
             }
             return MapData("$atollName Atoll OpenStreetMap snapshot ($date)", System.currentTimeMillis(),
