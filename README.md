@@ -8,7 +8,9 @@ Haluvi Explorer is an experimental native Android application for blind and visu
 - Import Haluvi Navigation v2 full-backup or shared-map JSON from Map Management. Google Places and other source records are kept on-device with their original provider fields; records without usable names or coordinates remain available in a separate review list.
 - Continue exploring offline after a map has been saved on the phone.
 - Follow road geometry through curved roads; downloaded maps use shared OpenStreetMap nodes, while imported backup junctions are labeled as estimates.
-- Inspect road endpoints, road length, nearby mapped places, and the order and side of places along a road. Road/address hints are used when the source provides them; otherwise place-to-road matching uses geometry and reports its estimated distance, with no fixed distance cutoff that silently hides records.
+- Inspect road endpoints, road length, nearby mapped places, and the order and side of places along a road. A saved address only takes priority when it names a road in that island's map. Generic addresses fall back to the nearest mapped road geometry, so the same place is not listed as belonging to every nearby road. There is no fixed distance cutoff; distant matches remain available and are labeled as estimates.
+- Previous Place selects the nearest earlier mapped place when starting at an arbitrary point, then follows the same complete place sequence in reverse. Separate saved records at the same position remain individually reachable.
+- Next Place and Previous Place report mapped or estimated road junctions crossed between places, including the crossing road name and the side relative to the virtual facing direction when that geometry is available. Crossings without shared mapped nodes are not invented.
 - Move by configurable steps, places, junctions, or automatic walking. Automatic walking pauses at junctions by default.
 - Review surroundings, virtual position, recent movement history, saved sessions, and bookmarks.
 - Practice a destination, a return journey, and a road connection memory challenge.
