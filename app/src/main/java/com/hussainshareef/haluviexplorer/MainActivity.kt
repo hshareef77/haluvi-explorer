@@ -559,9 +559,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun showRoadOverview(road: Road) {
         val map = loadedMap ?: return
+        val (firstEnd, otherEnd) = endpointNames(road)
+        var loadingStatus: TextView? = null
+        var detailsText: TextView? = null
+        var placesButton: Button? = null
+
+        // Keep the essential controls available immediately. Place-to-road matching
+        // can be expensive for large imported maps, so only the supplementary details
+        // wait for its background calculation.
         page("Road Overview", "Back to Roads", { chooseRoad() }) {
-            addText("Loading road details and matching saved places…", live = true)
+            addText("Road: ${road.name}")
+            addText("Choose where to start. These controls are at the top of the screen.")
+            addButton("Start at the $firstEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, true))}") { launchOnRoad(road, 0.0) }
+            addButton("Start at the $otherEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, false))}") { launchOnRoad(road, road.lengthMeters) }
+            addButton("Choose a position along ${road.name}") { chooseRoadPosition(road) }
+            placesButton = addButton("Loading places along ${road.name}…", enabled = false) {}
+            loadingStatus = addText("Checking saved places for this road…", live = true)
+            detailsText = addText("Road details are loading.")
         }
+
         val generation = screenGeneration
         Thread {
             val result = runCatching {
@@ -572,38 +588,32 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             mainHandler.post {
                 if (generation != screenGeneration || isFinishing || isDestroyed) return@post
                 result.onSuccess { (endpoints, connections, orderedPlaces) ->
-                    showRoadOverviewContent(road, map, endpoints, connections, orderedPlaces)
+                    loadingStatus?.text = "${orderedPlaces.size} saved place records are available along this road."
+                    detailsText?.text = buildString {
+                        append("Mapped length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}. ")
+                        append(endpoints)
+                        append(" Roads at the ends: ")
+                        append(if (connections.isEmpty()) "None mapped." else connections.joinToString("; "))
+                        append(" Next Place follows saved places matched to this road. Generic addresses use nearest mapped road geometry; distant matches are estimates. Next Junction stops at each mapped junction.")
+                    }
+                    placesButton?.apply {
+                        text = "Places along ${road.name}, ${orderedPlaces.size} places"
+                        contentDescription = text
+                        isEnabled = true
+                        setOnClickListener { showRoadPlaces(road, orderedPlaces) }
+                    }
                 }.onFailure {
-                    page("Road Overview", "Back to Roads", { chooseRoad() }) {
-                        addText("Road details could not be prepared.")
-                        addButton("Try again") { showRoadOverview(road) }
+                    loadingStatus?.text = "Saved place matching did not finish. You can still start exploring this road."
+                    detailsText?.text = "Road length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}."
+                    placesButton?.apply {
+                        text = "Retry loading places and road details"
+                        contentDescription = text
+                        isEnabled = true
+                        setOnClickListener { showRoadOverview(road) }
                     }
                 }
             }
         }.start()
-    }
-
-    private fun showRoadOverviewContent(
-        road: Road,
-        map: MapData,
-        endpoints: String,
-        connections: List<String>,
-        orderedPlaces: List<NearbyPlace>
-    ) {
-        page("Road Overview", "Back to Roads", { chooseRoad() }) {
-            addText("Road: ${road.name}")
-            addText("Choose where to start. These controls are at the top of the screen.")
-            val (firstEnd, otherEnd) = endpointNames(road)
-            addButton("Start at the $firstEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, true))}") { launchOnRoad(road, 0.0) }
-            addButton("Start at the $otherEnd end of ${road.name}, facing ${compassName(bearingAtEndpoint(road, false))}") { launchOnRoad(road, road.lengthMeters) }
-            addButton("Choose a position along ${road.name}") { chooseRoadPosition(road) }
-            addButton("Places along ${road.name}, ${orderedPlaces.size} places") { showRoadPlaces(road, orderedPlaces) }
-            addText("Road details")
-            addText("Mapped length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}.")
-            addText(endpoints)
-            addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
-            addText("Next Place uses a saved address when it names a mapped road. Generic addresses use the nearest mapped road geometry, so a place is not repeated on every nearby road. No distance cut-off is used; distant matches are labeled estimates. Next Junction stops at each mapped junction.")
-        }
     }
 
     private fun showRoadPlaces(road: Road, orderedPlaces: List<NearbyPlace>) {
