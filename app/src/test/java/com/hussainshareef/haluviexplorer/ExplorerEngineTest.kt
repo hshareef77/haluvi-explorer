@@ -9,6 +9,18 @@ class ExplorerEngineTest {
     private val eastRoad = Road("east", "East Road", "residential", listOf(1, 2), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001)))
     private val northRoad = Road("north", "North Road", "residential", listOf(2, 3), listOf(GeoPoint(0.0, 0.001), GeoPoint(0.001, 0.001)))
 
+    @Test fun placeStepAnnouncementReportsCrossedRoadBeforeDestinationAndKeepsSide() {
+        val place = Place("p", "Cafe", "cafe", GeoPoint(0.0, 0.001), false, "google")
+        val nearby = NearbyPlace(place, 50.0, 8.0, "left", 80.0, 0, "nearby geometry estimate")
+        val crossing = RoadCrossing("North Road", "left", false, 40.0)
+        val announcement = formatPlaceStepAnnouncement("Next place", nearby, "East Road", listOf(crossing))
+        assertTrue(announcement.indexOf("North Road") < announcement.indexOf("Cafe"))
+        assertTrue(announcement.contains("possible junction"))
+        assertTrue(announcement.contains("on your left"))
+        assertTrue(announcement.contains("Road match is estimated"))
+        assertTrue(announcement.contains("Entrance not confirmed"))
+    }
+
     @Test fun movementFollowsBentRoadGeometryAndStopsAtItsEndpoint() {
         val bent = Road("bent", "Bent Road", "residential", listOf(10, 11, 12), listOf(GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.001), GeoPoint(0.001, 0.001)))
         val map = MapData("Test", 0, listOf(bent), emptyList())
