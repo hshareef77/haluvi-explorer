@@ -14,6 +14,13 @@ Haluvi Explorer is an experimental native Android application for blind and visu
 - Practice a destination, a return journey, and a road connection memory challenge.
 - Use the application with TalkBack or Jieshuo+. Controls use native Android views and accessible text labels.
 
+## Optional Google Places lookup
+
+- Google Places lookup is opt-in and off by default. The user enters a Places API key in Settings; the key is encrypted locally with Android Keystore and is not included in map exports.
+- Google Nearby Search runs around the current virtual position when requested, or automatically when that mode is selected. Internet access, Places API (New), and Google billing are required.
+- Live Google results are kept separate from saved map places. They are not added to road traversal, local map files, or backups. Downloaded and imported offline maps remain available without Google access.
+- Nearby Search returns up to 20 results per query, so it supplements map coverage but is not a complete list of all places on a road.
+
 ## Map source and limits
 
 Island searches use OpenStreetMap's Nominatim service. A map is downloaded only after the user selects a search result. Road and place data are stored locally as JSON map files in the app's private files and are available offline after download. The app does not request GPS or location permission.

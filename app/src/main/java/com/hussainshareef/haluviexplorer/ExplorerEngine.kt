@@ -2,6 +2,32 @@ package com.hussainshareef.haluviexplorer
 
 import kotlin.math.*
 
+
+/** Place-step text announces road crossings first and keeps road matches explicitly qualified. */
+internal fun formatPlaceStepAnnouncement(
+    label: String,
+    place: NearbyPlace,
+    roadName: String,
+    crossings: List<RoadCrossing>
+): String {
+    val crossingText = crossings.joinToString(separator = " ") { crossing ->
+        val certainty = if (crossing.verified) "mapped junction" else "possible junction"
+        val side = if (crossing.side == "straight") "straight ahead" else "on your ${crossing.side}"
+        "Passed $certainty with ${crossing.roadName} $side."
+    }
+    val placeText = when (place.association) {
+        "address names this road" -> "${place.side} on $roadName. Address lists $roadName."
+        "address names another road" -> "Address lists a different road; not assigned to $roadName."
+        "nearby geometry estimate" -> "${place.side} of $roadName, about ${place.roadDistance.roundToInt()} metres from the road. Road match is estimated."
+        else -> "Mapped point is ${place.roadDistance.roundToInt()} metres from $roadName. Nearest-road match is uncertain."
+    }
+    val entrance = if (place.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."
+    return listOf(
+        crossingText.takeIf { it.isNotBlank() },
+        "$label: ${place.place.name}, ${place.place.category}. $placeText. $entrance"
+    ).filterNotNull().joinToString(" ")
+}
+
 data class RoadConnection(val road: Road, val sharedNode: Long, val joinIndex: Int, val bearingOut: Double, val turn: Double)
 data class NearbyPlace(
     val place: Place,
