@@ -202,6 +202,24 @@ class ExplorerEngineTest {
         assertEquals("Second", engine.nextPlace()?.place?.name)
     }
 
+    @Test fun previousPlaceFromAnUntrackedMiddlePositionChoosesTheNearestPlaceBehind() {
+        val first = Place("one", "First", "shop", GeoPoint(0.0, 0.0002), false)
+        val second = Place("two", "Second", "shop", GeoPoint(0.0, 0.0005), false)
+        val third = Place("three", "Third", "shop", GeoPoint(0.0, 0.0008), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second, third)))
+        engine.start(eastRoad, eastRoad.lengthMeters * 0.65, faceAlongRoad = false)
+        assertEquals("Second", engine.previousPlace()?.place?.name)
+    }
+
+    @Test fun previousPlaceChoosesNearestPlaceWhenFacingTheOtherDirection() {
+        val first = Place("one", "First", "shop", GeoPoint(0.0, 0.0002), false)
+        val second = Place("two", "Second", "shop", GeoPoint(0.0, 0.0005), false)
+        val third = Place("three", "Third", "shop", GeoPoint(0.0, 0.0008), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second, third)))
+        engine.start(eastRoad, eastRoad.lengthMeters * 0.35, faceAlongRoad = false)
+        assertEquals("Second", engine.previousPlace()?.place?.name)
+    }
+
     @Test fun nextAndPreviousCanTraversePlacesAtTheSameRoadPosition() {
         val first = Place("one", "Alpha", "shop", GeoPoint(0.0, 0.0005), false)
         val second = Place("two", "Beta", "shop", GeoPoint(0.0, 0.0005), false)
@@ -254,12 +272,36 @@ class ExplorerEngineTest {
             "google", """{"formatted_address":"12 East Road, Malé","route":"East Road"}""")
         val otherRoad = Place("other", "Other road place", "shop", GeoPoint(0.0, 0.0006), false,
             "google", """{"street":"West Road"}""")
-        val map = MapData("Test", 0, listOf(eastRoad), listOf(addressed, otherRoad))
+        val westRoad = Road("west", "West Road", "residential", listOf(4, 5), listOf(GeoPoint(-0.0001, 0.0), GeoPoint(-0.0001, 0.001)))
+        val map = MapData("Test", 0, listOf(eastRoad, westRoad), listOf(addressed, otherRoad))
         val restored = MapData.fromJson(map.toJson())
         val engine = ExplorerEngine(restored).apply { start(eastRoad, 0.0) }
         assertEquals(listOf("Addressed place"), engine.placesAlongCurrentRoad().map { it.place.name })
         assertTrue(engine.placesAlongCurrentRoad().single().place.roadAddressHints().contains("East Road"))
         assertEquals(2, restored.places.size)
+    }
+
+    @Test fun genericGoogleAddressDoesNotHidePlaceFromOfflineRoadExploration() {
+        val genericAddress = Place("generic", "Clinic", "health", GeoPoint(0.00004, 0.0005), false,
+            "google", """{"address":"5GG3+JGH, Malé, Maldives"}""")
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(genericAddress)))
+            .apply { start(eastRoad, 0.0) }
+        assertEquals("Clinic", engine.nextPlace()?.place?.name)
+        assertEquals("Clinic", engine.placesAlongCurrentRoad().single().place.name)
+        assertTrue(engine.placesAlongCurrentRoad().single().association.contains("geometry estimate"))
+    }
+
+    @Test fun genericAddressPlaceIsAssignedOnlyToItsNearestMappedRoad() {
+        val west = Road("west", "West Road", "residential", listOf(3, 4), listOf(
+            GeoPoint(0.00004, 0.0), GeoPoint(0.00004, 0.001)
+        ))
+        val genericAddress = Place("generic", "Clinic", "health", GeoPoint(0.00001, 0.0005), false,
+            "google", """{"address":"Malé, Maldives"}""")
+        val map = MapData("Test", 0, listOf(eastRoad, west), listOf(genericAddress))
+        val east = ExplorerEngine(map).apply { start(eastRoad, 0.0) }
+        val westbound = ExplorerEngine(map).apply { start(west, 0.0) }
+        assertEquals("Clinic", east.nextPlace()?.place?.name)
+        assertNull(westbound.nextPlace())
     }
 
     @Test fun placeNavigationReportsNamedRoadCrossingsAndTheirSide() {
@@ -276,6 +318,9 @@ class ExplorerEngineTest {
         assertEquals("left", crossing.side)
         assertTrue(crossing.verified)
         assertTrue(engine.roadCrossingsTo(main.lengthMeters, keepFacing = true).isNotEmpty())
+        engine.start(main, main.lengthMeters)
+        val reverseCrossing = engine.roadCrossingsTo(0.0).single()
+        assertEquals("right", reverseCrossing.side)
     }
 
     @Test fun sameNamedCrossRoadIsReportedOnBothSidesOfTheRoute() {

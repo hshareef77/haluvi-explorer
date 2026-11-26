@@ -15,10 +15,11 @@ internal fun formatPlaceStepAnnouncement(
         val side = if (crossing.side == "straight") "straight ahead" else "on your ${crossing.side}"
         "Passed $certainty with ${crossing.roadName} $side."
     }
-    val placeText = when (place.association) {
-        "address names this road" -> "${place.side} on $roadName. Address lists $roadName."
-        "address names another road" -> "Address lists a different road; not assigned to $roadName."
-        "nearby geometry estimate" -> "${place.side} of $roadName, about ${place.roadDistance.roundToInt()} metres from the road. Road match is estimated."
+    val placeText = when {
+        place.association == "address names this road" -> "${place.side} on $roadName. Address lists $roadName."
+        place.association == "address names another road" -> "Address lists a different road; not assigned to $roadName."
+        place.association.startsWith("nearest mapped road geometry estimate") || place.association == "nearby geometry estimate" -> "${place.side} of $roadName, about ${place.roadDistance.roundToInt()} metres from the road. Road match is estimated."
+        place.association.startsWith("distant nearest-road estimate") -> "Mapped point is ${place.roadDistance.roundToInt()} metres from $roadName. It is assigned to the nearest mapped road as an estimate."
         else -> "Mapped point is ${place.roadDistance.roundToInt()} metres from $roadName. Nearest-road match is uncertain."
     }
     val entrance = if (place.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."
@@ -50,8 +51,13 @@ private data class RoadPlaceProjection(
     val roadDistance: Double,
     val segmentIndex: Int,
     val addressMatched: Boolean,
-    val hasAddressHint: Boolean
+    val addressNamesMappedRoad: Boolean,
+    val nearestRoadId: String?,
+    val nearestRoadName: String?
 )
+
+private data class RoadSegmentRef(val road: Road, val segmentIndex: Int)
+private data class NearestRoadMatch(val roadId: String, val roadName: String, val distanceMeters: Double)
 
 class ExplorerEngine(private val map: MapData) {
     var road: Road? = null
@@ -73,6 +79,17 @@ class ExplorerEngine(private val map: MapData) {
     private var placeNavigationProgress: Double? = null
     /** The expensive place-to-road projection is computed once per selected road, then reused by every control. */
     private val placeProjectionCache = HashMap<String, List<RoadPlaceProjection>>()
+    /** Address matching only treats a road name as authoritative when it matches a road in this map. */
+    private val normalizedMapRoadNames by lazy {
+        map.roads.map { normalizeAddress(it.name) }
+            .filter { name -> name.isNotBlank() && name.split(' ').count { it.isNotBlank() } >= 2 }
+            .distinct()
+    }
+    private val nearestRoadCache = HashMap<Int, NearestRoadMatch?>()
+    private val roadSegmentGrid by lazy { buildRoadSegmentGrid() }
+    private val gridCellMeters = 150.0
+    private val gridCellLatDegrees = gridCellMeters / 111_320.0
+    private val gridCellLonDegrees = gridCellLatDegrees / kotlin.math.cos(Math.toRadians(map.roads.flatMap { it.points }.map { it.lat }.average().takeIf(Double::isFinite) ?: 0.0)).coerceAtLeast(0.1)
 
     fun start(onRoad: Road, atProgress: Double, faceAlongRoad: Boolean = true) {
         clearPlaceNavigationCursor()
@@ -280,7 +297,12 @@ class ExplorerEngine(private val map: MapData) {
             .sortedWith(placeOrder(travelSign))
         val cursor = currentPlaceCursorIndex(current, places)
         if (cursor != null) return places.getOrNull(cursor - 1)
-        return places.firstOrNull { (it.alongDistance - progressMeters) * direction >= 0.1 }
+        // Without a place cursor (for example, after starting midway along a road), choose
+        // the nearest place behind the virtual position rather than the first road-end item.
+        return places.asSequence()
+            .filter { (it.alongDistance - progressMeters) * direction >= 0.1 }
+            .minWithOrNull(compareBy<NearbyPlace> { abs(it.alongDistance - progressMeters) }
+                .then(placeOrder(-travelSign)))
     }
 
     /** All saved places that can be associated with this route, without a distance cut-off. */
@@ -425,7 +447,9 @@ class ExplorerEngine(private val map: MapData) {
     }
 
     private fun placesOnCurrentRoad(current: Road, direction: Int, facingOverride: Double? = null): List<NearbyPlace> {
-        return projectionsFor(current).asSequence().filter { !it.hasAddressHint || it.addressMatched }.map { item ->
+        return projectionsFor(current).asSequence().filter { item ->
+            item.addressMatched || (!item.addressNamesMappedRoad && nearestRoadBelongsTo(current, item.nearestRoadId))
+        }.map { item ->
                 val bearing = bearingDegrees(current.points[item.segmentIndex], current.points[item.segmentIndex + 1])
                 val travelBearing = if (direction >= 0) bearing else (bearing + 180.0) % 360.0
                 val relative = signedAngle(facingOverride ?: travelBearing, bearingDegrees(item.foot, item.place.point))
@@ -444,24 +468,117 @@ class ExplorerEngine(private val map: MapData) {
     private fun projectionsFor(current: Road): List<RoadPlaceProjection> = placeProjectionCache.getOrPut(current.id) {
         map.places.mapIndexedNotNull { index, place ->
             val hints = place.roadAddressHints()
-            val addressMatched = hints.any { roadNameInAddress(current.name, it) }
+            val normalizedAddress = normalizeAddress(hints.joinToString(" "))
+            val addressMatched = roadNameInAddress(current.name, normalizedAddress)
+            val addressNamesMappedRoad = normalizedMapRoadNames.any { roadNameInAddress(it, normalizedAddress) }
             val (along, foot, segmentIndex) = projectToLine(current.points, place.point)
-            RoadPlaceProjection(index, place, along, foot, distanceMeters(foot, place.point), segmentIndex, addressMatched, hints.isNotEmpty())
+            val nearest = if (addressMatched || addressNamesMappedRoad) null else nearestMappedRoad(index, place.point)
+            RoadPlaceProjection(index, place, along, foot, distanceMeters(foot, place.point), segmentIndex,
+                addressMatched, addressNamesMappedRoad, nearest?.roadId, nearest?.roadName)
         }
     }
 
     private fun RoadPlaceProjection.association(): String = when {
         addressMatched -> "address names this road"
-        hasAddressHint -> "address names another road"
-        roadDistance <= 40.0 -> "nearby geometry estimate"
-        else -> "distant nearest-road estimate"
+        addressNamesMappedRoad -> "address names another mapped road"
+        nearestRoadName != null && roadDistance <= 40.0 -> "nearest mapped road geometry estimate"
+        nearestRoadName != null -> "distant nearest-road estimate: $nearestRoadName"
+        else -> "nearest-road match unavailable"
     }
 
+    private fun normalizeAddress(value: String) = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+
     private fun roadNameInAddress(roadName: String, address: String): Boolean {
-        fun normalize(value: String) = value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
-        val road = normalize(roadName)
-        val text = normalize(address)
+        val road = normalizeAddress(roadName)
+        val text = normalizeAddress(address)
         return road.isNotBlank() && " $text ".contains(" $road ")
+    }
+
+    /**
+     * Assigns address-free places to only their nearest mapped road geometry. This keeps
+     * generic addresses such as "Malé, Maldives" eligible, without listing the same place
+     * as belonging to every road it happens to be within a broad radius of.
+     */
+    private fun nearestRoadBelongsTo(current: Road, nearestRoadId: String?): Boolean {
+        if (nearestRoadId == null) return false
+        if (current.id == nearestRoadId) return true
+        val componentIds = current.id.takeIf { it.startsWith("path:") }
+            ?.removePrefix("path:")?.split('+')?.toSet().orEmpty()
+        return nearestRoadId in componentIds
+    }
+
+    private fun cell(point: GeoPoint): Pair<Int, Int> =
+        floor(point.lat / gridCellLatDegrees).toInt() to floor(point.lon / gridCellLonDegrees).toInt()
+
+    private fun buildRoadSegmentGrid(): Map<Pair<Int, Int>, List<RoadSegmentRef>> {
+        val mutable = HashMap<Pair<Int, Int>, MutableList<RoadSegmentRef>>()
+        map.roads.forEach { candidate ->
+            for (index in 0 until candidate.points.lastIndex) {
+                val a = candidate.points[index]
+                val b = candidate.points[index + 1]
+                val minCell = cell(GeoPoint(min(a.lat, b.lat), min(a.lon, b.lon)))
+                val maxCell = cell(GeoPoint(max(a.lat, b.lat), max(a.lon, b.lon)))
+                val cellCount = (maxCell.first - minCell.first + 1).toLong() * (maxCell.second - minCell.second + 1)
+                val ref = RoadSegmentRef(candidate, index)
+                if (cellCount > 500) {
+                    // Long or malformed segments remain searchable from their midpoint cell.
+                    val midpoint = GeoPoint((a.lat + b.lat) / 2.0, (a.lon + b.lon) / 2.0)
+                    mutable.getOrPut(cell(midpoint)) { mutableListOf() }.add(ref)
+                } else {
+                    for (latCell in minCell.first..maxCell.first) {
+                        for (lonCell in minCell.second..maxCell.second) {
+                            mutable.getOrPut(latCell to lonCell) { mutableListOf() }.add(ref)
+                        }
+                    }
+                }
+            }
+        }
+        return mutable
+    }
+
+    private fun nearestMappedRoad(placeIndex: Int, point: GeoPoint): NearestRoadMatch? {
+        if (nearestRoadCache.containsKey(placeIndex)) return nearestRoadCache[placeIndex]
+        val grid = roadSegmentGrid
+        val origin = cell(point)
+        val visitedSegments = HashSet<String>()
+        var nearest: NearestRoadMatch? = null
+        for (radius in 0..4) {
+            val latRange = (origin.first - radius)..(origin.first + radius)
+            val lonRange = (origin.second - radius)..(origin.second + radius)
+            for (latCell in latRange) for (lonCell in lonRange) {
+                if (radius > 0 && abs(latCell - origin.first) != radius && abs(lonCell - origin.second) != radius) continue
+                grid[latCell to lonCell].orEmpty().forEach { ref ->
+                    val segmentKey = "${ref.road.id}:${ref.segmentIndex}"
+                    if (!visitedSegments.add(segmentKey)) return@forEach
+                    val a = ref.road.points[ref.segmentIndex]
+                    val b = ref.road.points[ref.segmentIndex + 1]
+                    val (_, foot, _) = projectToLine(listOf(a, b), point)
+                    val distance = distanceMeters(foot, point)
+                    if (nearest == null || distance < nearest!!.distanceMeters) {
+                        nearest = NearestRoadMatch(ref.road.id, ref.road.name, distance)
+                    }
+                }
+            }
+            val lowerBound = max(0.0, (radius - 1) * gridCellMeters)
+            if (nearest != null && nearest!!.distanceMeters <= lowerBound) break
+        }
+        // Most island places have a road within a few cells. For remote or sparse areas,
+        // scan the full road geometry once so the nearest-road assignment has no radius cap.
+        if (nearest == null || nearest!!.distanceMeters > 450.0) {
+            map.roads.forEach { candidate ->
+                for (index in 0 until candidate.points.lastIndex) {
+                    val segmentKey = "${candidate.id}:$index"
+                    if (!visitedSegments.add(segmentKey)) continue
+                    val (_, foot, _) = projectToLine(listOf(candidate.points[index], candidate.points[index + 1]), point)
+                    val distance = distanceMeters(foot, point)
+                    if (nearest == null || distance < nearest!!.distanceMeters) {
+                        nearest = NearestRoadMatch(candidate.id, candidate.name, distance)
+                    }
+                }
+            }
+        }
+        nearestRoadCache[placeIndex] = nearest
+        return nearest
     }
 
     private fun nextDecisionNodeIndex(current: Road): Int? {

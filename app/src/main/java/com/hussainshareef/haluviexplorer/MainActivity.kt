@@ -576,7 +576,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText(endpoints)
             val connections = connectionsAtEitherEnd(road, map)
             addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
-            addText("Next Place follows saved places with an address naming this road, then places ordered by nearest road geometry when no road address is available. No distance cut-off is used. The place list shows the source and distance from the road; far matches are estimates. Next Junction stops at each mapped junction.")
+            addText("Next Place uses a saved address when it names a mapped road. Generic addresses use the nearest mapped road geometry, so a place is not repeated on every nearby road. No distance cut-off is used; distant matches are labeled estimates. Next Junction stops at each mapped junction.")
         }
     }
 
@@ -925,7 +925,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun moveToNextPlace(status: TextView?) {
         val e = engine ?: return
         val next = e.nextPlace()
-        if (next == null) { announce("No more mapped places ahead on ${e.road?.name}.", status); return }
+        if (next == null) { announce("No more saved places are matched to ${e.road?.name} ahead. Other island places remain available in Explore Places.", status); return }
         val crossings = e.roadCrossingsTo(next.alongDistance)
         e.moveAlongRoadTo(next.alongDistance)
         e.rememberPlaceNavigation(next)
@@ -936,7 +936,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun moveToPreviousPlace(status: TextView?) {
         val e = engine ?: return
         val place = e.previousPlace()
-        if (place == null) { announce("No more mapped places behind on ${e.road?.name}.", status); return }
+        if (place == null) { announce("No more saved places are matched to ${e.road?.name} behind. Other island places remain available in Explore Places.", status); return }
         val crossings = e.roadCrossingsTo(place.alongDistance, keepFacing = true)
         e.moveAlongRoadTo(place.alongDistance, keepFacing = true)
         e.rememberPlaceNavigation(place)
