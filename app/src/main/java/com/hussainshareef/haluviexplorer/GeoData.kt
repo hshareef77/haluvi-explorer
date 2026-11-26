@@ -4,6 +4,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.*
 
+private val ROAD_ADDRESS_HINT_KEY_REGEX = Regex("[^a-z0-9]")
+private val ROAD_ADDRESS_HINT_KEYS = setOf(
+    "road", "roadname", "road_name", "street", "streetname", "street_name", "addr:street",
+    "route", "vicinity", "formattedaddress", "formatted_address", "address", "streetaddress",
+    "street_address", "addressline", "address_line"
+).mapTo(HashSet()) { it.replace(ROAD_ADDRESS_HINT_KEY_REGEX, "") }
+
 data class GeoPoint(val lat: Double, val lon: Double)
 
 data class Road(
@@ -40,7 +47,6 @@ data class Place(
         if (sourceData.isBlank()) return emptyList()
         return runCatching {
         val root = JSONObject(sourceData)
-        val keys = setOf("road", "roadname", "road_name", "street", "streetname", "street_name", "addr:street", "route", "vicinity", "formattedaddress", "formatted_address", "address", "streetaddress", "street_address", "addressline", "address_line")
         val values = mutableListOf<String>()
         fun visit(value: Any?, key: String = "") {
             when (value) {
@@ -49,10 +55,10 @@ data class Place(
                     if (types != null && (0 until types.length()).any { types.optString(it) == "route" }) {
                         listOf("long_name", "short_name").mapNotNull { value.optString(it).takeIf(String::isNotBlank) }.forEach(values::add)
                     }
-                    value.keys().forEach { child -> visit(value.opt(child), child.lowercase().replace(Regex("[^a-z0-9]"), "")) }
+                    value.keys().forEach { child -> visit(value.opt(child), child.lowercase().replace(ROAD_ADDRESS_HINT_KEY_REGEX, "")) }
                 }
                 is JSONArray -> for (i in 0 until value.length()) visit(value.opt(i), key)
-                is String -> if (key in keys.map { it.replace(Regex("[^a-z0-9]"), "") }) values += value
+                is String -> if (key in ROAD_ADDRESS_HINT_KEYS) values += value
             }
         }
         visit(root)
