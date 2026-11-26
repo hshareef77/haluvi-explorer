@@ -410,7 +410,8 @@ class ExplorerEngine(private val map: MapData) {
                     relative < 0 -> "left"
                     else -> "right"
                 }
-                NearbyPlace(item.place, 0.0, item.roadDistance, side, item.alongDistance, item.recordIndex, item.association())
+                NearbyPlace(item.place, abs(item.alongDistance - progressMeters), item.roadDistance, side,
+                    item.alongDistance, item.recordIndex, item.association())
         }.toList()
     }
 

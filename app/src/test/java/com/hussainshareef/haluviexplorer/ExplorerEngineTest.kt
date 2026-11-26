@@ -103,7 +103,7 @@ class ExplorerEngineTest {
         val places = MapData.fromOverpass("Test", response).places
         assertEquals(2, places.size)
         assertTrue(places.single { it.name == "Island Pharmacy" }.roadAddressHints().contains("East Road"))
-        assertEquals("public_transport", places.single { it.name == "Island Ferry Terminal" }.category)
+        assertEquals("station", places.single { it.name == "Island Ferry Terminal" }.category)
     }
 
     @Test fun bodyGeometryNodeIdsConfirmJunctionConnectivity() {
