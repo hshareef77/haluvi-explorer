@@ -207,7 +207,7 @@ class ExplorerEngineTest {
         val second = Place("two", "Second", "shop", GeoPoint(0.0, 0.0005), false)
         val third = Place("three", "Third", "shop", GeoPoint(0.0, 0.0008), false)
         val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second, third)))
-        engine.start(eastRoad, eastRoad.lengthMeters * 0.65)
+        engine.start(eastRoad, eastRoad.lengthMeters * 0.65, faceAlongRoad = false)
         assertEquals("Second", engine.previousPlace()?.place?.name)
     }
 
