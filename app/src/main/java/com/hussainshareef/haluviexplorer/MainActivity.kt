@@ -50,6 +50,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var lastBackLabel = "Back to Main Menu"
     private val importRequestCode = 7412
     private var screenGeneration = 0
+    private var preparedPlacesEngine: ExplorerEngine? = null
+    private var preparedPlacesRoadId: String? = null
+    private var preparingPlacesKey: String? = null
+    private val pendingPlaceActions = mutableListOf<PendingPlaceAction>()
+    private data class PendingPlaceAction(val key: String, val generation: Int, val status: TextView?, val action: () -> Unit)
     private var activeDownload: MapDownloadHandle? = null
     private var activeDownloadDialog: AlertDialog? = null
 
@@ -704,6 +709,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun launchOnRoad(road: Road, progress: Double, faceAlongRoad: Boolean = true) {
         val map = loadedMap ?: return
         engine = ExplorerEngine(map).apply { start(road, progress, faceAlongRoad) }
+        preparedPlacesEngine = null
+        preparedPlacesRoadId = null
+        pendingPlaceActions.clear()
         startPosition = engine?.position()
         returnJourney = false; destination = null
         persistSession()
@@ -827,22 +835,24 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun showExplore() {
         val e = engine ?: return showHome()
         val map = loadedMap ?: return showHome()
+        var placePrepStatus: TextView? = null
         page("Exploration", "Back to ${map.islandName} Roads", { chooseRoad() }) {
             val current = e.road
             addText("${map.islandName}. ${current?.name ?: "No road selected"}.")
             if (current?.nodeIdsVerified != true) addText("Road connections may be estimated.")
             val live = addStatus(e.whereAmI())
+            placePrepStatus = live
             val pos = e.position()
             addText(pos?.let { "Current virtual position: ${"%.6f".format(Locale.US, it.lat)}, ${"%.6f".format(Locale.US, it.lon)}." }.orEmpty())
             addText("Distance: ${e.travelledMeters.roundToInt()} metres. Places visited: ${e.visitedPlaceCount()}.")
             addText("Step: ${stepMetres()} metres. Backward keeps your facing direction.")
-            addButton("Move Forward") { moveForward(live) }
-            addButton("Move Backward") { moveBackward(live) }
-            addButton("Next Place on Road") { moveToNextPlace(live) }
-            addButton("Previous Place on Road") { moveToPreviousPlace(live) }
-            addButton("Previous Junction / Road End") { moveToPreviousJunction(live) }
-            addButton("Next Junction / Road End") { moveToJunction(live) }
-            addButton("Look Around") { showLookAround() }
+            addButton("Move Forward") { runWhenRoadPlacesReady(live) { moveForward(live) } }
+            addButton("Move Backward") { runWhenRoadPlacesReady(live) { moveBackward(live) } }
+            addButton("Next Place on Road") { runWhenRoadPlacesReady(live) { moveToNextPlace(live) } }
+            addButton("Previous Place on Road") { runWhenRoadPlacesReady(live) { moveToPreviousPlace(live) } }
+            addButton("Previous Junction / Road End") { runWhenRoadPlacesReady(live) { moveToPreviousJunction(live) } }
+            addButton("Next Junction / Road End") { runWhenRoadPlacesReady(live) { moveToJunction(live) } }
+            addButton("Look Around") { runWhenRoadPlacesReady(live) { showLookAround() } }
             addButton("Where Am I?") { announce(e.whereAmI(), live) }
             addButton("Turn Around") { e.turnAround(); changed("You turned around. You are facing ${e.facing()}.", live) }
             val atEnd = e.atDecisionPoint()
@@ -863,7 +873,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     branches.forEach { c -> addText("${relativeDirection(c.turn)}: ${c.road.name}, ${compassName(c.bearingOut)}.") }
                 }
             }
-            addButton(if (autoWalking) "Stop Auto Walk" else "Start Auto Walk") { if (autoWalking) stopAutoWalk("Automatic walking stopped.") else startAutoWalk(live) }
+            addButton(if (autoWalking) "Stop Auto Walk" else "Start Auto Walk") {
+                if (autoWalking) stopAutoWalk("Automatic walking stopped.")
+                else runWhenRoadPlacesReady(live) { startAutoWalk(live) }
+            }
             addButton("Bookmark This Position") { addBookmark("position:${loadedFile?.name}:${pos?.lat},${pos?.lon}", "${current?.name}, ${map.islandName}, ${e.travelledMeters.roundToInt()} metres travelled") }
             addButton("Exploration History") { showHistory() }
             if (returnJourney) addButton("Check Return Distance") {
@@ -873,6 +886,58 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             destination?.let { goal -> addText("Find a Destination goal: ${goal.name}.") }
             addButton("Save and Return to Main Menu") { persistSession(); showHome() }
         }
+        // Warm the selected road's place index away from the UI thread. Any place-dependent
+        // control tapped before it is ready is queued and runs once, in order, after indexing.
+        prepareRoadPlacesAsync(e)
+    }
+
+    private fun placePreparationKey(e: ExplorerEngine, roadId: String): String =
+        "${System.identityHashCode(e)}:$roadId"
+
+    private fun runWhenRoadPlacesReady(status: TextView?, action: () -> Unit) {
+        val e = engine ?: return
+        val roadId = e.road?.id ?: return action()
+        if (preparedPlacesEngine === e && preparedPlacesRoadId == roadId) {
+            action()
+            return
+        }
+        val key = placePreparationKey(e, roadId)
+        if (pendingPlaceActions.count { it.key == key } >= 20) {
+            announce("Still preparing saved places. Please wait a moment before trying again.", status)
+            return
+        }
+        val generation = screenGeneration
+        pendingPlaceActions += PendingPlaceAction(key, generation, status, action)
+        announce("Preparing saved places for ${e.road?.name}. Your action will continue when ready.", status)
+        prepareRoadPlacesAsync(e)
+    }
+
+    private fun prepareRoadPlacesAsync(e: ExplorerEngine) {
+        val roadId = e.road?.id ?: return
+        if (preparedPlacesEngine === e && preparedPlacesRoadId == roadId) return
+        val key = placePreparationKey(e, roadId)
+        if (preparingPlacesKey == key) return
+        preparingPlacesKey = key
+        Thread {
+            val result = runCatching { e.preparePlaceMatchingForCurrentRoad() }
+            mainHandler.post {
+                if (preparingPlacesKey == key) preparingPlacesKey = null
+                if (result.isFailure || engine !== e || e.road?.id != roadId) {
+                    val failed = pendingPlaceActions.filter { it.key == key }
+                    pendingPlaceActions.removeAll { it.key == key }
+                    if (engine === e && e.road?.id == roadId) {
+                        val message = "Saved place matching could not finish. No queued movement was made. Try the control again."
+                        failed.filter { it.generation == screenGeneration }.forEach { it.status?.let { view -> announce(message, view) } }
+                    }
+                    return@post
+                }
+                preparedPlacesEngine = e
+                preparedPlacesRoadId = roadId
+                val ready = pendingPlaceActions.filter { it.key == key && it.generation == screenGeneration }
+                pendingPlaceActions.removeAll { it.key == key }
+                ready.forEach { it.action() }
+            }
+        }.start()
     }
 
     private fun moveForward(status: TextView?) {
