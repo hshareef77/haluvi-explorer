@@ -3,7 +3,7 @@ package com.hussainshareef.haluviexplorer
 import kotlin.math.*
 
 
-/** Place-step text announces road crossings first and keeps road matches explicitly qualified. */
+/** Short place-step wording: crossed roads first, then the place and its side/confidence. */
 internal fun formatPlaceStepAnnouncement(
     label: String,
     place: NearbyPlace,
@@ -11,21 +11,32 @@ internal fun formatPlaceStepAnnouncement(
     crossings: List<RoadCrossing>
 ): String {
     val crossingText = crossings.joinToString(separator = " ") { crossing ->
-        val certainty = if (crossing.verified) "mapped junction" else "possible junction"
-        val side = if (crossing.side == "straight") "straight ahead" else "on your ${crossing.side}"
-        "Passed $certainty with ${crossing.roadName} $side."
+        val confidence = if (crossing.verified) "" else "possible "
+        val direction = if (crossing.side == "straight") "ahead" else "on your ${crossing.side}"
+        "Crossed a ${confidence}junction with ${crossing.roadName} $direction."
+    }
+    val side = when (place.side) {
+        "left" -> "on your left"
+        "right" -> "on your right"
+        "ahead" -> "ahead"
+        "behind" -> "behind"
+        else -> "nearby"
     }
     val placeText = when {
-        place.association == "address names this road" -> "${place.side} on $roadName. Address lists $roadName."
-        place.association == "address names another road" -> "Address lists a different road; not assigned to $roadName."
-        place.association.startsWith("nearest mapped road geometry estimate") || place.association == "nearby geometry estimate" -> "${place.side} of $roadName, about ${place.roadDistance.roundToInt()} metres from the road. Road match is estimated."
-        place.association.startsWith("distant nearest-road estimate") -> "Mapped point is ${place.roadDistance.roundToInt()} metres from $roadName. It is assigned to the nearest mapped road as an estimate."
-        else -> "Mapped point is ${place.roadDistance.roundToInt()} metres from $roadName. Nearest-road match is uncertain."
+        place.association == "address names this road" ->
+            "${place.place.name}, $side near $roadName."
+        place.association == "address names another road" ->
+            "${place.place.name} is listed on another road."
+        place.association.startsWith("nearest mapped road geometry estimate") || place.association == "nearby geometry estimate" ->
+            "${place.place.name}, $side; estimated ${place.roadDistance.roundToInt()} metres from $roadName."
+        place.association.startsWith("distant nearest-road estimate") ->
+            "${place.place.name}; nearest-road match to $roadName is estimated, ${place.roadDistance.roundToInt()} metres away."
+        else -> "${place.place.name}; road side is uncertain."
     }
-    val entrance = if (place.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."
+    val entrance = if (place.place.entranceVerified) " Entrance mapped." else " Entrance not confirmed."
     return listOf(
         crossingText.takeIf { it.isNotBlank() },
-        "$label: ${place.place.name}, ${place.place.category}. $placeText. $entrance"
+        "$label: $placeText$entrance"
     ).filterNotNull().joinToString(" ")
 }
 
