@@ -189,6 +189,7 @@ data class MapData(
                         "way" -> e.optJSONObject("center")?.let { GeoPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN)) }
                         "relation" -> e.optJSONObject("center")?.let { GeoPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN)) }
                         else -> null
+                    }
                     val key = placeKeys.firstOrNull { tags.has(it) } ?: continue
                     val display = tags.optString("name").ifBlank { tags.optString("brand").ifBlank { tags.optString(key) } }
                     if (pos == null || !pos.lat.isFinite() || !pos.lon.isFinite()) {
