@@ -190,11 +190,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Backup import keeps valid saved roads and places on this phone, including Google Places entries. Place source labels are preserved.", 15f)
             val roads = summaries.sumOf { it.roadCount }
             val places = summaries.sumOf { it.placeCount }
-            addText("${summaries.size} islands have an offline map. $roads road sections and $places places saved.", 19f, live = true)
+            val unlocated = summaries.sumOf { it.unlocatedPlaceCount }
+            addText("${summaries.size} islands have an offline map. $roads road sections and ${places + unlocated} saved place records: $places with coordinates and $unlocated without usable coordinates.", 19f, live = true)
             if (summaries.isEmpty()) addText("No island maps downloaded yet.")
             summaries.forEach { summary ->
                 val file = summary.file
-                addText("${summary.islandName}. ${summary.roadCount} road sections, ${summary.placeCount} mapped places, ${summary.length / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(summary.downloadedAt))}.")
+                addText("${summary.islandName}. ${summary.roadCount} road sections, ${summary.placeCount} places with coordinates, ${summary.unlocatedPlaceCount} place records without usable coordinates, ${summary.length / 1024} kilobytes. Saved ${java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(summary.downloadedAt))}.")
                 addButton("Explore ${summary.islandName}") { openSavedMap(summary, false, "Back to Map Management", ::showMapManager) }
                 addButton("Explore places on ${summary.islandName}") { openSavedMap(summary, true, "Back to Map Management", ::showMapManager) }
                 addButton("Update ${summary.islandName}") { updateSavedIslandMap(summary) }
@@ -257,8 +258,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 }
                 mainHandler.post {
                     result.onSuccess { report ->
-                        status.text = "Import complete. ${report.mapsProcessed} island maps checked, ${report.roadsAdded} roads and ${report.placesAdded} places added, including saved Google Places entries. " +
-                            (if (report.unsupportedPlacesSkipped > 0) "${report.unsupportedPlacesSkipped} entries without usable names or coordinates could not be added." else "All place entries with valid names and coordinates were imported.")
+                        status.text = "Import complete. ${report.mapsProcessed} island maps checked, ${report.roadsAdded} roads and ${report.placesAdded} places with coordinates added, including saved Google Places entries. ${report.unlocatedPlacesAdded} place records without usable names or coordinates were preserved for review."
                         announce(status.text.toString(), status)
                     }.onFailure {
                         status.text = "Import failed. Choose a Haluvi Navigation backup or shared map JSON file. ${it.message ?: ""}"
@@ -273,7 +273,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val map = loadedMap ?: return showMapManager()
         page("${map.islandName} Map Overview", "Back to Map Management", ::showMapManager) {
             addText("${map.islandName} map is saved on this phone and available offline.")
-            addText("${map.roads.size} mapped roads, ${map.places.size} mapped places, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
+            addText("${map.roads.size} mapped roads, ${map.places.size} place records with coordinates, ${map.unlocatedPlaces.size} place records without usable coordinates, and ${map.roads.sumOf { it.lengthMeters }.roundToInt()} metres of road geometry.")
             addText("Road geometry comes from OpenStreetMap. Saved place entries retain their original sources; coverage and positional accuracy depend on each source.")
             if (!map.connectivityVerified) addText("Some road sections lack OpenStreetMap node IDs. Connections for those sections are estimated from identical coordinates and are not confirmed junctions.")
             addButton("Explore Roads") { chooseRoad() }
@@ -415,7 +415,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                             else ""
                             val accuracyNote = if (savedMap.connectivityVerified) " Road connections use OSM node IDs from the downloaded data."
                                 else " Some connections remain estimates because this map source did not include OSM node IDs."
-                            announce("Map ready. ${area.shortName} is saved offline with ${savedMap.roads.size} road sections and ${savedMap.places.size} places.$sourceNote$accuracyNote", status)
+                            announce("Map ready. ${area.shortName} is saved offline with ${savedMap.roads.size} road sections, ${savedMap.places.size} places with coordinates, and ${savedMap.unlocatedPlaces.size} place records without usable coordinates.$sourceNote$accuracyNote", status)
                             showMapOverview()
                         } else {
                             detail.text = "Could not save this map: ${saved.exceptionOrNull()?.message ?: "storage error"}. You can retry."
@@ -473,7 +473,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 if (summaries == null) { status.text = "Reading downloaded island maps…"; return }
                 matches.forEach { island ->
                     val saved = findSavedMap(island)
-                    val label = "${island.name}${if (saved == null) ". Map not downloaded" else ". Map downloaded, ${saved.roadCount} road sections, ${saved.placeCount} places"}"
+                    val label = "${island.name}${if (saved == null) ". Map not downloaded" else ". Map downloaded, ${saved.roadCount} road sections, ${saved.placeCount} places with coordinates, ${saved.unlocatedPlaceCount} without usable coordinates"}"
                     val button = Button(this@MainActivity).apply {
                         text = label; contentDescription = "$label, ${atoll.fullname}"; isAllCaps = false; minHeight = dp(58)
                         setOnClickListener {
@@ -511,20 +511,29 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val search = addEdit("Search roads", filterText)
             val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             column.addView(results)
+            var displayedCount = 100
             fun populate() {
                 results.removeAllViews()
-                val matches = groupRoadsByName(map.roads, search.text.toString()).take(80)
+                val allMatches = groupRoadsByName(map.roads, search.text.toString())
+                val matches = allMatches.take(displayedCount)
                 matches.forEach { (name, sections) ->
                     val total = sections.sumOf { it.lengthMeters }.roundToInt()
                     val label = "$name, $total metres across ${sections.size} sections"
                     val b = Button(this@MainActivity).apply { text = label; contentDescription = label; isAllCaps = false; minHeight = dp(58); setOnClickListener { showRoadSections(name, sections) } }
                     results.addView(b, LinearLayout.LayoutParams(-1, -2))
                 }
-                statusView?.text = if (matches.isEmpty()) "No matching roads." else "${matches.size} named roads shown. Their individual geometry sections stay available for accurate junction movement."
+                if (matches.size < allMatches.size) {
+                    val more = Button(this@MainActivity).apply {
+                        text = "Show next 100 roads"; contentDescription = "Show the next 100 of ${allMatches.size} matching roads"; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener { displayedCount += 100; populate() }
+                    }
+                    results.addView(more, LinearLayout.LayoutParams(-1, -2))
+                }
+                statusView?.text = if (allMatches.isEmpty()) "No matching roads." else "Showing ${matches.size} of ${allMatches.size} named roads. Their individual geometry sections stay available for accurate junction movement."
             }
             search.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { displayedCount = 100; populate() }
                 override fun afterTextChanged(s: Editable?) = Unit
             })
             addStatus("${map.roads.map { it.name.trim().lowercase() }.distinct().size} named roads are available offline across ${map.roads.size} geometry sections.")
@@ -537,7 +546,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (ordered.size == 1) return showRoadOverview(ordered.single())
         val map = loadedMap ?: return
         page("$name Road Sections", "Back to Roads", { chooseRoad(name) }) {
-            addText("Choose a connected part of $name. Each part follows the mapped road shape and stops at mapped junctions.")
+            addText("$name has ${ordered.size} connected parts. Explore each part to cover the full mapped road. Every part follows the mapped shape and stops at mapped junctions.")
             ordered.forEachIndexed { index, road ->
                 val label = "Part ${index + 1}, ${road.lengthMeters.roundToInt()} metres. ${endpointDescription(road, map)}"
                 addButton(label) { showRoadOverview(road) }
@@ -550,7 +559,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val e = ExplorerEngine(map)
         e.start(road, 0.0)
         val endpoints = endpointDescription(road, map)
-        val orderedPlaces = e.nearbyPlaces(100_000.0).filter { it.roadDistance <= 40.0 }.sortedBy { it.alongDistance }
+        // Keep every mapped place visible in this overview. Distance from the road is
+        // reported for each record so a far, estimated association is never presented
+        // as a confirmed roadside entrance.
+        val orderedPlaces = e.placesAlongCurrentRoad()
         page("Road Overview", "Back to Roads", { chooseRoad() }) {
             addText("Road: ${road.name}")
             addText("Choose where to start. These controls are at the top of the screen.")
@@ -564,19 +576,41 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText(endpoints)
             val connections = connectionsAtEitherEnd(road, map)
             addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
-            addText("Next Place follows all mapped places along this connected road. Next Junction stops at each mapped junction.")
+            addText("Next Place follows saved places with an address naming this road, then places ordered by nearest road geometry when no road address is available. No distance cut-off is used. The place list shows the source and distance from the road; far matches are estimates. Next Junction stops at each mapped junction.")
         }
     }
 
     private fun showRoadPlaces(road: Road, orderedPlaces: List<NearbyPlace>) {
         page("Places Along ${road.name}", "Back to Road Overview", { showRoadOverview(road) }) {
-            addText("${orderedPlaces.size} mapped places, ordered from the first end of ${road.name}. Place records and their source data are unchanged.")
+            addText("${orderedPlaces.size} place records with coordinates are ordered from the first end of ${road.name}. Distance and address labels show how strongly each matches this road. Records without usable coordinates are available from Explore Places.")
             if (orderedPlaces.isEmpty()) {
                 addText("No mapped places were found along this road.")
             } else {
-                orderedPlaces.forEachIndexed { index, item ->
-                    addText("Place ${index + 1}: ${item.place.name}, ${item.place.category}, ${item.alongDistance.roundToInt()} metres from the first end, ${item.roadDistance.roundToInt()} metres from the road. ${if (item.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."}")
+                val rows = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                column.addView(rows)
+                var displayedCount = 100
+                val status = addStatus("Showing 0 of ${orderedPlaces.size} places.")
+                fun populate() {
+                    rows.removeAllViews()
+                    orderedPlaces.take(displayedCount).forEachIndexed { index, item ->
+                        val source = placeSourceLabel(item.place).ifBlank { "unknown source" }
+                        val label = "Place ${index + 1}: ${item.place.name}, ${item.place.category}, source $source, ${item.alongDistance.roundToInt()} metres along the road, ${item.roadDistance.roundToInt()} metres from it. ${item.association}. ${if (item.place.entranceVerified) "Entrance mapped." else "Entrance not confirmed."}"
+                        val button = Button(this@MainActivity).apply {
+                            text = label; contentDescription = label; isAllCaps = false; minHeight = dp(58)
+                            setOnClickListener { showPlaceDetail(item.place, "Back to Places Along ${road.name}") { showRoadPlaces(road, orderedPlaces) } }
+                        }
+                        rows.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+                    }
+                    if (displayedCount < orderedPlaces.size) {
+                        val more = Button(this@MainActivity).apply {
+                            text = "Show next 100 places"; contentDescription = "Show the next 100 of ${orderedPlaces.size} places"; isAllCaps = false; minHeight = dp(58)
+                            setOnClickListener { displayedCount += 100; populate() }
+                        }
+                        rows.addView(more, LinearLayout.LayoutParams(-1, -2))
+                    }
+                    status.text = "Showing ${minOf(displayedCount, orderedPlaces.size)} of ${orderedPlaces.size} places."
                 }
+                populate()
             }
             addButton("Back to Road Overview") { showRoadOverview(road) }
         }
@@ -644,37 +678,92 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val map = loadedMap ?: return showMapManager()
         page("Explore Places in ${map.islandName}", "Back to Island List", ::chooseMapForPlaces) {
             addText("Search mapped places. A mapped place position does not confirm that an entrance faces a particular road.")
+            if (map.unlocatedPlaces.isNotEmpty()) addButton("Review ${map.unlocatedPlaces.size} saved place records without usable coordinates") { showUnlocatedPlaceList() }
             val search = addEdit("Search places", filterText)
             val results = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
             column.addView(results)
+            var displayedCount = 100
             fun populate() {
                 results.removeAllViews()
-                val matches = map.places.filter { (it.name + " " + it.category + " " + placeSourceLabel(it)).contains(search.text.toString(), true) }.take(100)
+                val allMatches = map.places.filter {
+                    (it.name + " " + it.category + " " + placeSourceLabel(it) + " " + it.roadAddressHints().joinToString(" "))
+                        .contains(search.text.toString(), true)
+                }
+                val matches = allMatches.take(displayedCount)
                 matches.forEach { place ->
                     val label = "${place.name}, ${place.category}" + placeSourceLabel(place).takeIf { it.isNotBlank() }?.let { ", source: $it" }.orEmpty()
                     val b = Button(this@MainActivity).apply { text = label; contentDescription = "Place $label"; isAllCaps = false; minHeight = dp(58); setOnClickListener { showPlaceDetail(place) } }
                     results.addView(b, LinearLayout.LayoutParams(-1, -2))
                 }
-                statusView?.text = "${map.places.size} mapped places available offline. ${matches.size} results shown."
+                if (matches.size < allMatches.size) {
+                    val more = Button(this@MainActivity).apply {
+                        text = "Show next 100 places"; contentDescription = "Show the next 100 of ${allMatches.size} matching places"; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener { displayedCount += 100; populate() }
+                    }
+                    results.addView(more, LinearLayout.LayoutParams(-1, -2))
+                }
+                statusView?.text = "${map.places.size} places with coordinates available offline. ${map.unlocatedPlaces.size} saved records have no usable coordinates. Showing ${matches.size} of ${allMatches.size} matching places."
             }
             search.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = populate()
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { displayedCount = 100; populate() }
                 override fun afterTextChanged(s: Editable?) = Unit
             })
-            addStatus("${map.places.size} mapped places available offline.")
+            addStatus("${map.places.size} places with coordinates available offline. ${map.unlocatedPlaces.size} saved records have no usable coordinates.")
             populate()
         }
     }
 
-    private fun showPlaceDetail(place: Place) {
+    private fun showUnlocatedPlaceList() {
+        val map = loadedMap ?: return showMapManager()
+        page("Saved Place Records Without Coordinates", "Back to Places", { showPlaceList() }) {
+            addText("These records were preserved from the backup but cannot be placed on a road because their coordinates or names are missing or invalid. Their source data remains saved.")
+            val rows = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            column.addView(rows)
+            var displayedCount = 100
+            val status = addStatus("Showing 0 of ${map.unlocatedPlaces.size} saved records.")
+            fun populate() {
+                rows.removeAllViews()
+                map.unlocatedPlaces.take(displayedCount).forEachIndexed { index, place ->
+                    val display = place.name.ifBlank { "Unnamed place record" }
+                    val label = "Record ${index + 1}: $display, ${place.category.ifBlank { "uncategorized" }}, source ${place.source.ifBlank { "unknown" }}. ${place.reason}"
+                    val button = Button(this@MainActivity).apply {
+                        text = label; contentDescription = label; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener {
+                            page("Saved Place Record", "Back to Saved Place Records", ::showUnlocatedPlaceList) {
+                                addText(display)
+                                addText("Category: ${place.category.ifBlank { "not provided" }}. Source: ${place.source.ifBlank { "unknown" }}. Record ID: ${place.id.ifBlank { "not provided" }}.")
+                                addText(place.reason)
+                                addText("Original saved provider record:")
+                                addText(place.sourceData.ifBlank { "No original fields were provided." })
+                            }
+                        }
+                    }
+                    rows.addView(button, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+                }
+                if (displayedCount < map.unlocatedPlaces.size) {
+                    val more = Button(this@MainActivity).apply {
+                        text = "Show next 100 records"; contentDescription = "Show the next 100 of ${map.unlocatedPlaces.size} saved records"; isAllCaps = false; minHeight = dp(58)
+                        setOnClickListener { displayedCount += 100; populate() }
+                    }
+                    rows.addView(more, LinearLayout.LayoutParams(-1, -2))
+                }
+                status.text = "Showing ${minOf(displayedCount, map.unlocatedPlaces.size)} of ${map.unlocatedPlaces.size} saved records."
+            }
+            populate()
+            addButton("Back to Places") { showPlaceList() }
+        }
+    }
+
+    private fun showPlaceDetail(place: Place, backLabel: String = "Back to Places", back: () -> Unit = { showPlaceList() }) {
         val map = loadedMap ?: return
         val nearest = ExplorerEngine(map).nearestRoad(place.point)
-        page("Place Details", "Back to Places", { showPlaceList() }) {
+        page("Place Details", backLabel, back) {
             addText("${place.name}. Category: ${place.category}.")
             placeSourceLabel(place).takeIf { it.isNotBlank() }?.let { addText("Source: $it.") }
             addText(if (place.entranceVerified) "OpenStreetMap includes an entrance tag at this position." else "This is a mapped place position. Its building entrance and which road it faces are not verified.")
             addText("Position: ${place.point.lat}, ${place.point.lon}.")
+            place.roadAddressHints().takeIf { it.isNotEmpty() }?.let { addText("Road or address information: ${it.distinct().joinToString()}") }
             addText(nearest?.let { "Nearest mapped road: ${it.first.name}, about ${distanceMeters(place.point, pointAt(it.first, it.second)).roundToInt()} metres away." } ?: "No mapped road found nearby.")
             addButton("Start exploration near this place", enabled = nearest != null) {
                 engine = ExplorerEngine(map).apply { startNear(place.point) }
@@ -752,6 +841,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun moveForward(status: TextView?) {
         val e = engine ?: return
+        val before = e.progressMeters
         val amount = e.move(stepMetres())
         if (amount == 0.0) { announce("You are already at the road endpoint.", status); return }
         val ending = if (e.atRoadEnd()) {
@@ -761,14 +851,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 "You reached a junction. ${branches.size} connected roads. ${branches.joinToString { it.road.name }}. Choose a road to continue."
             else "Possible junction based on shared map coordinates. ${branches.joinToString { it.road.name }} may connect here. Choose only if this imported connection seems correct."
         } else "Moved forward ${amount.roundToInt()} metres."
-        checkNearbyPlaces(status)
+        checkNearbyPlaces(status, before)
         changed(ending, status)
     }
 
     private fun moveBackward(status: TextView?) {
         val e = engine ?: return
+        val before = e.progressMeters
         val amount = e.moveBackward(stepMetres())
-        checkNearbyPlaces(status)
+        checkNearbyPlaces(status, before, keepFacing = true)
         changed(if (amount == 0.0) "No road geometry behind you." else "Moved backward ${amount.roundToInt()} metres. You are still facing ${e.facing()}.", status)
     }
 
@@ -782,7 +873,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 "${if (verified) "Junction" else "Possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
             return
         }
+        val before = e.progressMeters
         e.move(dist)
+        checkNearbyPlaces(status, before)
         val options = e.connections()
         val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
         changed(if (options.isEmpty()) "End of ${e.road?.name}. No other road mapped." else
@@ -791,8 +884,10 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun moveToPreviousJunction(status: TextView?) {
         val e = engine ?: return
+        val before = e.progressMeters
         val moved = e.moveBackwardToDecisionPoint()
         if (moved == 0.0) { announce("No earlier junction or road end mapped.", status); return }
+        checkNearbyPlaces(status, before, keepFacing = true)
         val options = e.connections()
         val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
         changed(if (options.isEmpty()) "Previous road end on ${e.road?.name}." else
@@ -833,8 +928,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (next == null) { announce("No more mapped places ahead on ${e.road?.name}.", status); return }
         val crossings = e.roadCrossingsTo(next.alongDistance)
         e.moveAlongRoadTo(next.alongDistance)
-        e.rememberPlaceNavigation(next.place)
-        e.markVisited(next.place)
+        e.rememberPlaceNavigation(next)
+        e.markVisited(next)
         changed(placeStepAnnouncement("Next place", next, crossings), status)
     }
 
@@ -844,16 +939,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (place == null) { announce("No more mapped places behind on ${e.road?.name}.", status); return }
         val crossings = e.roadCrossingsTo(place.alongDistance, keepFacing = true)
         e.moveAlongRoadTo(place.alongDistance, keepFacing = true)
-        e.rememberPlaceNavigation(place.place)
-        e.markVisited(place.place)
+        e.rememberPlaceNavigation(place)
+        e.markVisited(place)
         changed(placeStepAnnouncement("Previous place", place, crossings), status)
     }
 
     private fun placeStepAnnouncement(label: String, place: NearbyPlace, crossings: List<RoadCrossing>): String {
-        val crossingText = crossings.takeIf { it.isNotEmpty() }?.joinToString(separator = "; ", prefix = " On the way, you passed ") { crossing ->
-            "${if (crossing.verified) "mapped junction" else "possible junction"} with ${crossing.roadName} on your ${crossing.side}"
+        val placeLocation = if (place.roadDistance > 40.0) {
+            "mapped point ${place.roadDistance.roundToInt()} metres from the road; side and road match are estimates"
+        } else "${place.side} of ${engine?.road?.name}, ${place.roadDistance.roundToInt()} metres from the road"
+        val crossingText = crossings.takeIf { it.isNotEmpty() }?.joinToString(separator = "; ", prefix = " On the way, you crossed ") { crossing ->
+            "${if (crossing.verified) "mapped junction" else "possible junction"} with ${crossing.roadName} ${when (crossing.side) { "straight" -> "straight ahead"; else -> "on your ${crossing.side}" }}"
         }.orEmpty()
-        return "$label: ${place.place.name}, ${place.place.category}, ${place.side} of ${engine?.road?.name}.$crossingText"
+        val addressNote = if (place.association == "address names this road") " Address names this road." else ""
+        return "$label: ${place.place.name}, ${place.place.category}, $placeLocation.$addressNote$crossingText"
     }
 
     private fun showLookAround() {
@@ -871,11 +970,15 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     page("Nearby Place", "Back to Look Around", ::showLookAround) {
                         addText("${item.place.name}, ${item.place.category}, ${item.side}, ${item.distance.roundToInt()} metres away.")
                         placeSourceLabel(item.place).takeIf { it.isNotBlank() }?.let { addText("Source: $it.") }
+                        addText("Mapped point is ${item.roadDistance.roundToInt()} metres from ${engine?.road?.name}. ${item.association.replaceFirstChar { it.uppercase() }}.")
                         addText(if (item.place.entranceVerified) "An entrance is mapped here." else "Entrance location is not verified.")
                         addButton("Move to this place along the road") {
                             val delta = item.alongDistance - (engine?.progressMeters ?: 0.0)
-                            if (delta * (engine?.travelSign ?: 1) >= 0) engine?.move(abs(delta)) else engine?.moveBackward(abs(delta))
-                            engine?.markVisited(item.place); showExplore()
+                            val before = engine?.progressMeters ?: 0.0
+                            val keepFacing = delta * (engine?.travelSign ?: 1) < 0
+                            engine?.moveAlongRoadTo(item.alongDistance, keepFacing)
+                            checkNearbyPlaces(null, before, keepFacing)
+                            engine?.markVisited(item); persistSession(); showExplore()
                         }
                         addButton("Set as Find a Destination goal") { destination = item.place; announce("Destination set to ${item.place.name}.", null); showExplore() }
                     }
@@ -887,14 +990,23 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun checkNearbyPlaces(status: TextView?) {
-        if (!prefs.getBoolean("announce_places", true)) return
+    private fun checkNearbyPlaces(status: TextView?, previousProgress: Double? = null, keepFacing: Boolean = false) {
         val e = engine ?: return
-        val passed = e.nearbyPlaces(4.0).firstOrNull { it.place.id !in passedPlaceIds }
-        if (passed != null) {
-            passedPlaceIds += passed.place.id
-            e.markVisited(passed.place)
-            announce("Passing ${passed.place.name} on your ${passed.side}.", status)
+        if (prefs.getBoolean("announce_places", true)) {
+            val passed = if (previousProgress != null) e.placesPassedBetween(previousProgress, e.progressMeters, keepFacing)
+                else e.nearbyPlaces(4.0)
+            val newPlaces = passed.filter { placeRecordKey(it) !in passedPlaceIds }
+            if (newPlaces.isNotEmpty()) {
+                newPlaces.forEach { item ->
+                    passedPlaceIds += placeRecordKey(item)
+                    e.markVisited(item)
+                }
+                val descriptions = newPlaces.joinToString(separator = "; ") { item ->
+                    if (item.roadDistance > 40.0) "${item.place.name}, mapped point ${item.roadDistance.roundToInt()} metres from the road; side uncertain"
+                    else "${item.place.name} on your ${item.side}"
+                }
+                announce("Passing $descriptions.", status)
+            }
         }
         val goal = destination
         if (goal != null) {
@@ -902,6 +1014,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             if (distance <= 20.0) { destination = null; announce("Destination reached: ${goal.name}.", status); history("Destination reached: ${goal.name}") }
         }
     }
+
+    private fun placeRecordKey(item: NearbyPlace): String =
+        "${item.recordIndex}|${item.place.source}|${item.place.id}|${item.place.name}|${item.place.category}|${item.place.point.lat}|${item.place.point.lon}"
 
     private val passedPlaceIds = linkedSetOf<String>()
 
@@ -930,13 +1045,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                 if (!autoWalking) return
                 val e = engine ?: return stopAutoWalk("Automatic walking stopped.")
                 val chunk = (prefs.getInt("walk_speed", 14) / 10.0).coerceIn(0.2, 0.8)
+                val before = e.progressMeters
                 val moved = e.move(chunk)
-                checkNearbyPlaces(status)
+                checkNearbyPlaces(status, before)
                 if (e.atRoadEnd() || moved < chunk || moved == 0.0) {
                     val connections = e.connections()
-                    if (!prefs.getBoolean("stop_junctions", true) && connections.size == 1 && e.atRoadEnd()) {
-                        e.takeConnection(connections.first())
-                        status?.text = "Continuing onto ${e.road?.name}."
+                    if (!prefs.getBoolean("stop_junctions", true) && e.canContinueOnCurrentRoad() && e.continueOnCurrentRoad()) {
+                        status?.text = "Continuing straight on ${e.road?.name}."
                         persistSession()
                         mainHandler.postDelayed(this, 800)
                         return
@@ -968,6 +1083,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val road = e.road ?: return
         prefs.edit().putString("session_map", mapFile.name).putString("session_name", prefs.getString("session_name", "My exploration")).putString("session_road", road.id)
             .putFloat("session_progress", e.progressMeters.toFloat()).putInt("session_sign", e.travelSign)
+            .putInt("session_place_record", e.placeNavigationRecordIndex() ?: -1)
             .putFloat("session_facing", e.facingBearing.toFloat()).putFloat("session_distance", e.travelledMeters.toFloat())
             .putInt("session_junctions", e.visitedJunctions).apply()
     }
@@ -990,6 +1106,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                             restore(road, prefs.getFloat("session_progress", 0f).toDouble(), prefs.getInt("session_sign", 1),
                                 prefs.getFloat("session_facing", 0f).toDouble(), prefs.getFloat("session_distance", 0f).toDouble(),
                                 prefs.getInt("session_junctions", 0))
+                            restorePlaceNavigation(prefs.getInt("session_place_record", -1).takeIf { it >= 0 })
                         }
                         startPosition = engine?.position(); showExplore()
                     }

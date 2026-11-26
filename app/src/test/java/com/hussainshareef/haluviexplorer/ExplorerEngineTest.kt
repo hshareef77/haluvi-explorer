@@ -95,6 +95,17 @@ class ExplorerEngineTest {
         assertEquals("Island Pharmacy", map.places.single().name)
     }
 
+    @Test fun osmPlacesKeepAddressTagsAndRelationPlacesWithCenters() {
+        val response = """{"elements":[
+            {"type":"node","id":9,"lat":0.0,"lon":0.0005,"tags":{"amenity":"pharmacy","name":"Island Pharmacy","addr:street":"East Road"}},
+            {"type":"relation","id":10,"center":{"lat":0.0002,"lon":0.0005},"tags":{"public_transport":"station","name":"Island Ferry Terminal"}}
+        ]}"""
+        val places = MapData.fromOverpass("Test", response).places
+        assertEquals(2, places.size)
+        assertTrue(places.single { it.name == "Island Pharmacy" }.roadAddressHints().contains("East Road"))
+        assertEquals("public_transport", places.single { it.name == "Island Ferry Terminal" }.category)
+    }
+
     @Test fun bodyGeometryNodeIdsConfirmJunctionConnectivity() {
         val roadJson = """{"elements":[{"type":"way","id":41,"nodes":[1001,1002],"tags":{"highway":"residential","name":"First Road"},"geometry":[{"lat":4.17,"lon":73.5},{"lat":4.17,"lon":73.501}]},{"type":"way","id":42,"nodes":[1002,1003],"tags":{"highway":"residential","name":"Second Road"},"geometry":[{"lat":4.17,"lon":73.501},{"lat":4.171,"lon":73.501}]}]}"""
         val map = MapData.fromOverpassParts("Malé", roadJson, """{"elements":[]}""")
@@ -195,6 +206,50 @@ class ExplorerEngineTest {
         assertEquals("Alpha", engine.previousPlace()?.place?.name)
     }
 
+    @Test fun placeCursorTraversesSeparateSourceRecordsEvenWhenIdsMatch() {
+        val alpha = Place("shared-id", "Alpha shop", "shop", GeoPoint(0.0, 0.0005), false, "google")
+        val beta = Place("shared-id", "Beta office", "office", GeoPoint(0.0, 0.0005), false, "manual")
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(beta, alpha)))
+        engine.start(eastRoad, 0.0)
+        val first = engine.nextPlace()!!
+        assertEquals("Alpha shop", first.place.name)
+        engine.moveAlongRoadTo(first.alongDistance)
+        engine.rememberPlaceNavigation(first)
+        assertEquals("Beta office", engine.nextPlace()?.place?.name)
+    }
+
+    @Test fun nextPlaceDoesNotDropPlacesBeyondTheOldFortyMetreCutoff() {
+        val farPlace = Place("far", "Distant mapped place", "shop", GeoPoint(0.00055, 0.0005), false, "google")
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(farPlace)))
+        engine.start(eastRoad, 0.0)
+        val next = engine.nextPlace()
+        assertNotNull(next)
+        assertTrue(next!!.roadDistance > 40.0)
+    }
+
+    @Test fun movementReportsEveryPlacePassedInOneLongStep() {
+        val first = Place("one", "First place", "shop", GeoPoint(0.0, 0.0002), false)
+        val second = Place("two", "Second place", "office", GeoPoint(0.0, 0.0008), false)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(eastRoad), listOf(first, second)))
+        engine.start(eastRoad, 0.0)
+        val end = eastRoad.lengthMeters
+        val crossed = engine.placesPassedBetween(0.0, end)
+        assertEquals(listOf("First place", "Second place"), crossed.map { it.place.name })
+    }
+
+    @Test fun placeAddressRoadHintIsRetainedAndUsedForRoadAssociation() {
+        val addressed = Place("addressed", "Addressed place", "shop", GeoPoint(0.0006, 0.0005), false,
+            "google", """{"formatted_address":"12 East Road, Malé","route":"East Road"}""")
+        val otherRoad = Place("other", "Other road place", "shop", GeoPoint(0.0, 0.0006), false,
+            "google", """{"street":"West Road"}""")
+        val map = MapData("Test", 0, listOf(eastRoad), listOf(addressed, otherRoad))
+        val restored = MapData.fromJson(map.toJson())
+        val engine = ExplorerEngine(restored).apply { start(eastRoad, 0.0) }
+        assertEquals(listOf("Addressed place"), engine.placesAlongCurrentRoad().map { it.place.name })
+        assertTrue(engine.placesAlongCurrentRoad().single().place.roadAddressHints().contains("East Road"))
+        assertEquals(2, restored.places.size)
+    }
+
     @Test fun placeNavigationReportsNamedRoadCrossingsAndTheirSide() {
         val main = Road("main", "Main Road", "residential", listOf(1, 2, 3), listOf(
             GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.0005), GeoPoint(0.0, 0.001)
@@ -209,6 +264,23 @@ class ExplorerEngineTest {
         assertEquals("left", crossing.side)
         assertTrue(crossing.verified)
         assertTrue(engine.roadCrossingsTo(main.lengthMeters, keepFacing = true).isNotEmpty())
+    }
+
+    @Test fun sameNamedCrossRoadIsReportedOnBothSidesOfTheRoute() {
+        val main = Road("main", "Main Road", "residential", listOf(1, 2, 3), listOf(
+            GeoPoint(0.0, 0.0), GeoPoint(0.0, 0.0005), GeoPoint(0.0, 0.001)
+        ), nodeIdsVerified = true)
+        val north = Road("north", "Cross Street", "residential", listOf(2, 4), listOf(
+            GeoPoint(0.0, 0.0005), GeoPoint(0.0005, 0.0005)
+        ), nodeIdsVerified = true)
+        val south = Road("south", "Cross Street", "residential", listOf(5, 2), listOf(
+            GeoPoint(-0.0005, 0.0005), GeoPoint(0.0, 0.0005)
+        ), nodeIdsVerified = true)
+        val engine = ExplorerEngine(MapData("Test", 0, listOf(main, north, south), emptyList()))
+        engine.start(main, 0.0)
+        val crossings = engine.roadCrossingsTo(main.lengthMeters)
+        assertEquals(setOf("left", "right"), crossings.map { it.side }.toSet())
+        assertEquals(2, crossings.count { it.roadName == "Cross Street" })
     }
 
     @Test fun geometricRoadCrossingWithoutSharedNodeIsNotAnnouncedAsAJunction() {
@@ -283,7 +355,7 @@ class ExplorerEngineTest {
     }
 
     @Test fun importsNavigationRoadsAndAllPlaceSourcesIncludingGoogle() {
-        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17515,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17516,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé"}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
+        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","osmRoads":{"K:Malé":[{"name":"Majeedhee Magu","points":[[4.175,73.51],[4.1751,73.511]],"kind":"residential","oneway":false}]},"locations":[{"id":"osm-1","name":"Pharmacy","lat":4.17515,"lon":73.5105,"source":"osm_map","categoryId":"health","islandKey":"K:Malé","islandName":"Kaafu Malé"},{"id":"google-1","name":"Google Place","lat":4.17516,"lon":73.5106,"source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé","formatted_address":"Majeedhee Magu, Malé","address_components":[{"long_name":"Majeedhee Magu","short_name":"Majeedhee Magu","types":["route"]}]}],"roadNames":[{"island":"K:Malé","name":"Recorded Lane","points":[[4.1751,73.511],[4.1752,73.512]],"recorded":true,"width":"narrow"}]}"""
         val batch = HaluviBackupImporter.parse(backup)
         assertEquals(1, batch.maps.size)
         val map = batch.maps.single()
@@ -298,6 +370,8 @@ class ExplorerEngineTest {
         val google = map.places.single { it.source == "google" }
         assertEquals("google-1", google.id)
         assertEquals("Google Place", google.name)
+        assertTrue(google.roadAddressHints().contains("Majeedhee Magu, Malé"))
+        assertTrue(google.roadAddressHints().contains("Majeedhee Magu"))
         assertFalse(google.entranceVerified)
         assertEquals(0, batch.unsupportedPlacesSkipped)
         assertFalse(map.connectivityVerified)
@@ -355,5 +429,25 @@ class ExplorerEngineTest {
         } catch (_: IllegalArgumentException) {
             // Expected.
         }
+    }
+
+    @Test fun backupImportPreservesEntriesWithoutNamesOrCoordinatesForReview() {
+        val backup = """{"app":"Haluvi Navigation","version":2,"kind":"full","locations":[
+            {"id":"missing-coordinate","name":"Place without position","source":"google","categoryId":"shop","islandKey":"K:Malé","islandName":"Kaafu Malé","formatted_address":"East Road"},
+            {"id":"missing-name","lat":4.175,"lon":73.51,"source":"google","categoryId":"office","islandKey":"K:Malé","islandName":"Kaafu Malé"}
+        ]}"""
+        val batch = HaluviBackupImporter.parse(backup)
+        assertEquals(0, batch.unsupportedPlacesSkipped)
+        assertEquals(2, batch.unlocatedPlacesPreserved)
+        assertEquals(2, batch.maps.single().unlocatedPlaces.size)
+        assertTrue(batch.maps.single().unlocatedPlaces.first { it.id == "missing-coordinate" }.sourceData.contains("formatted_address"))
+    }
+
+    @Test fun unlocatedPlaceRecordsSurviveMapUpdatesAndSerialization() {
+        val record = UnlocatedPlace("google-no-point", "Saved place", "shop", "google", "No usable coordinates.", """{"address":"East Road"}""")
+        val old = MapData("Test", 1, listOf(eastRoad), emptyList(), unlocatedPlaces = listOf(record))
+        val updated = mergeDownloadedNetwork(old, MapData("Test", 2, listOf(eastRoad), emptyList()))
+        val restored = MapData.fromJson(updated.toJson())
+        assertEquals(listOf(record), restored.unlocatedPlaces)
     }
 }
