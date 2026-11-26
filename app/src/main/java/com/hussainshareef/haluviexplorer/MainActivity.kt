@@ -859,18 +859,19 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             val branches = e.connections()
             if (atEnd) {
                 val junctionVerified = current?.nodeIdsVerified == true && branches.all { it.road.nodeIdsVerified }
-                val junctionLabel = if (junctionVerified) "Junction" else "Possible junction (map estimate)"
-                addText(if (branches.isEmpty()) "Road end. No connecting road mapped." else "$junctionLabel. ${branches.size} roads.")
+                addText(junctionDescription(current?.name ?: "this road", branches, junctionVerified))
                 if (branches.isNotEmpty()) {
                     if (e.canContinueOnCurrentRoad()) addButton("Continue on ${current?.name}") {
                         e.continueOnCurrentRoad()
                         changed("Continuing on ${current?.name}.", live)
                     }
-                    addButton("Turn Left") { chooseBranch("left", live) }
-                    if (!e.canContinueOnCurrentRoad()) addButton("Continue Straight") { chooseBranch("straight", live) }
-                    addButton("Turn Right") { chooseBranch("right", live) }
-                    addButton("Choose Connected Road") { chooseConnection(branches) }
-                    branches.forEach { c -> addText("${relativeDirection(c.turn)}: ${c.road.name}, ${compassName(c.bearingOut)}.") }
+                    val leftBranches = branches.filter { it.turn < -25.0 }
+                    val rightBranches = branches.filter { it.turn > 25.0 }
+                    val straightBranches = branches.filter { kotlin.math.abs(it.turn) <= 25.0 }
+                    if (leftBranches.isNotEmpty()) addButton("Turn Left") { chooseAvailableBranch("left", leftBranches, live) }
+                    if (straightBranches.isNotEmpty()) addButton("Continue Straight") { chooseAvailableBranch("straight", straightBranches, live) }
+                    if (rightBranches.isNotEmpty()) addButton("Turn Right") { chooseAvailableBranch("right", rightBranches, live) }
+                    if (branches.size > 1) addButton("Choose Connected Road") { chooseConnection(branches) }
                 }
             }
             addButton(if (autoWalking) "Stop Auto Walk" else "Start Auto Walk") {
@@ -948,9 +949,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val ending = if (e.atRoadEnd()) {
             val branches = e.connections()
             val verified = e.road?.nodeIdsVerified == true && branches.all { it.road.nodeIdsVerified }
-            if (branches.isEmpty()) "You reached the end of the road." else if (verified)
-                "You reached a junction. ${branches.size} connected roads. ${branches.joinToString { it.road.name }}. Choose a road to continue."
-            else "Possible junction based on shared map coordinates. ${branches.joinToString { it.road.name }} may connect here. Choose only if this imported connection seems correct."
+            junctionDescription(e.road?.name ?: "this road", branches, verified)
         } else "Moved forward ${amount.roundToInt()} metres."
         checkNearbyPlaces(status, before)
         changed(ending, status)
@@ -970,8 +969,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (dist < 0.5) {
             val options = e.connections()
             val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
-            announce(if (options.isEmpty()) "Road end. No other road mapped." else
-                "${if (verified) "Junction" else "Possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
+            announce(junctionDescription(e.road?.name ?: "this road", options, verified), status)
             return
         }
         val before = e.progressMeters
@@ -979,8 +977,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         checkNearbyPlaces(status, before)
         val options = e.connections()
         val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
-        changed(if (options.isEmpty()) "End of ${e.road?.name}. No other road mapped." else
-            "${if (verified) "Junction" else "Possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
+        changed(junctionDescription(e.road?.name ?: "this road", options, verified), status)
     }
 
     private fun moveToPreviousJunction(status: TextView?) {
@@ -991,23 +988,48 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         checkNearbyPlaces(status, before, keepFacing = true)
         val options = e.connections()
         val verified = e.road?.nodeIdsVerified == true && options.all { it.road.nodeIdsVerified }
-        changed(if (options.isEmpty()) "Previous road end on ${e.road?.name}." else
-            "${if (verified) "Previous junction" else "Previous possible junction"} on ${e.road?.name}. ${options.joinToString { "${relativeDirection(it.turn)}: ${it.road.name}" }}.", status)
+        changed("Previous ${junctionDescription(e.road?.name ?: "this road", options, verified)}", status)
+    }
+
+    private fun junctionDescription(roadName: String, options: List<RoadConnection>, verified: Boolean): String {
+        if (options.isEmpty()) return "Road end on $roadName. No connected road is mapped."
+        val directions = listOf("Left", "Right", "Straight")
+        val details = directions.mapNotNull { direction ->
+            val roads = options.filter { relativeDirection(it.turn) == direction }.distinctBy { it.road.id }
+            if (roads.isEmpty()) null else {
+                val names = roads.joinToString(", ") { it.road.name }
+                when (direction) {
+                    "Left" -> if (roads.size == 1) "One road joins from your left: $names." else "${roads.size} roads join from your left: $names."
+                    "Right" -> if (roads.size == 1) "One road joins from your right: $names." else "${roads.size} roads join from your right: $names."
+                    else -> if (roads.size == 1) "One road continues straight: $names." else "${roads.size} roads continue straight: $names."
+                }
+            }
+        }.joinToString(" ")
+        val prefix = if (verified) "Junction on $roadName." else "Possible junction on $roadName, based on map estimates."
+        return "$prefix $details"
     }
 
     private fun relativeDirection(turn: Double): String = when {
-        turn < -35 -> "Left"
-        turn > 35 -> "Right"
+        turn < -25 -> "Left"
+        turn > 25 -> "Right"
         else -> "Straight"
+    }
+
+    private fun chooseAvailableBranch(turn: String, options: List<RoadConnection>, status: TextView?) {
+        when (options.size) {
+            0 -> announce("No road joins from your $turn here.", status)
+            1 -> chooseBranch(turn, status)
+            else -> chooseConnection(options)
+        }
     }
 
     private fun chooseBranch(turn: String, status: TextView?) {
         val e = engine ?: return
         val currentVerified = e.road?.nodeIdsVerified == true
         val selected = e.chooseTurn(turn)
-        if (selected == null) { announce("No mapped ${turn} turn is available here. Choose one of the connected roads.", status); return }
+        if (selected == null) { announce("No road joins from your $turn here.", status); return }
         changed(if (currentVerified && selected.road.nodeIdsVerified) "Turned $turn onto ${selected.road.name}. Facing ${e.facing()}."
-            else "Followed the estimated $turn connection onto ${selected.road.name}. This map does not verify this junction. Facing ${e.facing()}.", status)
+            else "Turned $turn onto possible road ${selected.road.name}. This connection is estimated. Facing ${e.facing()}.", status)
     }
 
     private fun chooseConnection(options: List<RoadConnection>) {
