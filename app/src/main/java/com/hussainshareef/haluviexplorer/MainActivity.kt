@@ -506,6 +506,9 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun chooseRoad(filterText: String = "") {
         val map = loadedMap ?: return showMapManager()
+        // Group and sort the road index once per screen. Repeating this over every
+        // geometry section on every keystroke made large imported maps sluggish.
+        val groupedRoads = groupRoadsByName(map.roads)
         page("Explore Roads in ${map.islandName}", "Back to Island List", ::chooseMapForExploration) {
             addText("Search by road name. Each named road appears once; its mapped sections are grouped together.")
             val search = addEdit("Search roads", filterText)
@@ -514,7 +517,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             var displayedCount = 100
             fun populate() {
                 results.removeAllViews()
-                val allMatches = groupRoadsByName(map.roads, search.text.toString())
+                val allMatches = groupedRoads.filter { it.first.contains(search.text.toString(), ignoreCase = true) }
                 val matches = allMatches.take(displayedCount)
                 matches.forEach { (name, sections) ->
                     val total = sections.sumOf { it.lengthMeters }.roundToInt()
@@ -556,13 +559,37 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun showRoadOverview(road: Road) {
         val map = loadedMap ?: return
-        val e = ExplorerEngine(map)
-        e.start(road, 0.0)
-        val endpoints = endpointDescription(road, map)
-        // Keep every mapped place visible in this overview. Distance from the road is
-        // reported for each record so a far, estimated association is never presented
-        // as a confirmed roadside entrance.
-        val orderedPlaces = e.placesAlongCurrentRoad()
+        page("Road Overview", "Back to Roads", { chooseRoad() }) {
+            addText("Loading road details and matching saved places…", live = true)
+        }
+        val generation = screenGeneration
+        Thread {
+            val result = runCatching {
+                val e = ExplorerEngine(map)
+                e.start(road, 0.0)
+                Triple(endpointDescription(road, map), connectionsAtEitherEnd(road, map), e.placesAlongCurrentRoad())
+            }
+            mainHandler.post {
+                if (generation != screenGeneration || isFinishing || isDestroyed) return@post
+                result.onSuccess { (endpoints, connections, orderedPlaces) ->
+                    showRoadOverviewContent(road, map, endpoints, connections, orderedPlaces)
+                }.onFailure {
+                    page("Road Overview", "Back to Roads", { chooseRoad() }) {
+                        addText("Road details could not be prepared.")
+                        addButton("Try again") { showRoadOverview(road) }
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun showRoadOverviewContent(
+        road: Road,
+        map: MapData,
+        endpoints: String,
+        connections: List<String>,
+        orderedPlaces: List<NearbyPlace>
+    ) {
         page("Road Overview", "Back to Roads", { chooseRoad() }) {
             addText("Road: ${road.name}")
             addText("Choose where to start. These controls are at the top of the screen.")
@@ -574,7 +601,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             addText("Road details")
             addText("Mapped length: ${road.lengthMeters.roundToInt()} metres. Road type: ${road.kind}.")
             addText(endpoints)
-            val connections = connectionsAtEitherEnd(road, map)
             addText("Roads at the ends: ${if (connections.isEmpty()) "None mapped." else connections.joinToString("; ")}")
             addText("Next Place uses a saved address when it names a mapped road. Generic addresses use the nearest mapped road geometry, so a place is not repeated on every nearby road. No distance cut-off is used; distant matches are labeled estimates. Next Junction stops at each mapped junction.")
         }
