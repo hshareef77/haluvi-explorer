@@ -17,7 +17,7 @@ class ExplorerEngineTest {
         assertTrue(announcement.indexOf("North Road") < announcement.indexOf("Cafe"))
         assertTrue(announcement.contains("possible junction"))
         assertTrue(announcement.contains("on your left"))
-        assertTrue(announcement.contains("Road match is estimated"))
+        assertTrue(announcement.contains("estimated 8 metres from East Road"))
         assertTrue(announcement.contains("Entrance not confirmed"))
     }
 
