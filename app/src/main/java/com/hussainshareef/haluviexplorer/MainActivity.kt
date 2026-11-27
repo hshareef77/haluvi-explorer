@@ -31,6 +31,8 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
+    private val haluviUpdater by lazy { mv.haluvi.updates.HaluviUpdater(this) }
+    override fun onResume() { super.onResume(); haluviUpdater.resume() }
     private lateinit var store: MapStore
     private lateinit var prefs: android.content.SharedPreferences
     private val osm by lazy { OpenStreetMapRepository(applicationContext) }
@@ -86,6 +88,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     @Deprecated("Use the system document picker result")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == mv.haluvi.updates.HaluviUpdater.INSTALL_REQUEST) { haluviUpdater.onActivityResult(requestCode); return }
         if (requestCode == importRequestCode && resultCode == RESULT_OK) data?.data?.let(::importMapBackup)
     }
 
@@ -1438,6 +1441,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun showSettings() {
         page("Settings", "Back to Main Menu", ::showHome) {
             addText("Adjust exploration controls and speech.")
+            addButton("Check for updates") { haluviUpdater.check(true) }
             addText("Google Places searches around your virtual position and needs internet access. It is off by default. Online results stay separate from saved map places. Your imported Google Places remain available offline. Restart the app after replacing a key already used in this session.")
             addSpinner("Google Places mode", listOf("Offline maps only", "Manual Google search", "Automatic Google search with offline fallback"), prefs.getInt("google_places_mode", 0).coerceIn(0, 2)) {
                 prefs.edit().putInt("google_places_mode", it).apply()
