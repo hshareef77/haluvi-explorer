@@ -35,6 +35,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.core:core:1.15.0")
     implementation(platform("org.jetbrains.kotlin:kotlin-bom:2.0.21"))
     implementation("com.google.android.libraries.places:places:3.5.0")
     testImplementation("junit:junit:4.13.2")
