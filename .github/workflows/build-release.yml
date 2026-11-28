@@ -14,7 +14,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: haluvi-explorer-release-${{ github.ref }}
+  group: android-version-allocation-${{ github.repository }}
   cancel-in-progress: false
 jobs:
   verify_pull_request:
@@ -48,6 +48,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Reserve permanent Android version code
+        id: version
+        uses: hshareef77/haluvi-app-updates/.github/actions/allocate-android-version-code@f722f2bdb9bc9a8608fc1408564077cb5690b43d
+        with:
+          package-name: com.hussainshareef.haluviexplorer
+          minimum-version-code: '30'
+          github-token: ${{ github.token }}
       - name: Verify and restore permanent Android signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -83,20 +90,13 @@ jobs:
             echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           } >> "$GITHUB_ENV"
           echo "Permanent signing certificate verified."
-      - name: Choose next release build number
-        id: release_number
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          count=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.draft == false)] | length')
-          echo "build_number=$((count + 1))" >> "$GITHUB_OUTPUT"
       - name: Run road-network tests and build the signed APK
         env:
-          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
+          BUILD_NUMBER: ${{ steps.version.outputs['version-code'] }}
         run: gradle --no-daemon -PappBuildNumber="$BUILD_NUMBER" :app:testDebugUnitTest :app:assembleRelease
       - name: Verify APK signature and prepare release file
         env:
-          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
+          BUILD_NUMBER: ${{ steps.version.outputs['version-code'] }}
           EXPECTED_CERT_SHA256: 01342D0E68C396BD1232F58CDC17E23CF330B26688420FEF0D822F8D4925D478
         shell: bash
         run: |
@@ -114,9 +114,12 @@ jobs:
             exit 1
           fi
           version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          aapt="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          "$aapt" dump badging "$apk" > "$RUNNER_TEMP/apk-metadata.txt"
+          grep -F "package: name='com.hussainshareef.haluviexplorer' versionCode='$BUILD_NUMBER' versionName='$version'" "$RUNNER_TEMP/apk-metadata.txt"
           test -n "$version"
           build="$BUILD_NUMBER"
-          cp "$apk" "Haluvi-Explorer-v${version}-build-${build}.apk"
+          cp "$apk" "Haluvi-Explorer-v${version}.apk"
           echo "VERSION_NAME=$version" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=$build" >> "$GITHUB_ENV"
           echo "Verified signed APK: version $version, build $build."
@@ -126,11 +129,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk="Haluvi-Explorer-v${VERSION_NAME}-build-${BUILD_NUMBER}.apk"
+          apk="Haluvi-Explorer-v${VERSION_NAME}.apk"
           test -s "$apk"
-          tag="v${VERSION_NAME}-build-${BUILD_NUMBER}"
+          tag="android-${BUILD_NUMBER}-${GITHUB_RUN_ID}"
           notes=$(printf 'Haluvi Explorer %s, build %s.\n\nSigned with the pinned permanent Haluvi Android key. Includes offline virtual road exploration using user-downloaded OpenStreetMap data.\n\nAutomated Kotlin road geometry tests passed before publishing. This is an experimental accessibility release; map coverage and place positions depend on OpenStreetMap.' "$VERSION_NAME" "$BUILD_NUMBER")
           gh release create "$tag" "$apk" \
             --target "$GITHUB_SHA" \
-            --title "Haluvi Explorer v${VERSION_NAME} (build ${BUILD_NUMBER})" \
+            --title "Haluvi Explorer v${VERSION_NAME}" \
             --notes "$notes"
