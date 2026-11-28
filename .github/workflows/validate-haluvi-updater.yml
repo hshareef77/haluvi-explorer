@@ -1,0 +1,26 @@
+name: Validate haluvi-explorer updater
+on:
+  push:
+    branches: [haluvi-updater-integration]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
