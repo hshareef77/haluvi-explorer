@@ -10,8 +10,8 @@ android {
         applicationId = "com.hussainshareef.haluviexplorer"
         minSdk = 26
         targetSdk = 35
-        versionCode = providers.gradleProperty("appBuildNumber").orNull?.toIntOrNull() ?: 1
-        versionName = "0.1.0"
+        versionCode = (System.getenv("HALUVI_RELEASE_VERSION_CODE")?.toIntOrNull() ?: 29).also { require(it >= 29) { "Version code below distributed APK floor" } }
+        versionName = (System.getenv("HALUVI_RELEASE_VERSION_NAME") ?: "0.1.1")
     }
     val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
     if (!keyStorePath.isNullOrBlank()) {
