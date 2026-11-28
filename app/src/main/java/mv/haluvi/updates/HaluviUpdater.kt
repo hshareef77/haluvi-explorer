@@ -15,13 +15,16 @@ import java.security.MessageDigest
 import org.json.JSONObject
 
 /** GitHub-only updater. No credentials or shared-storage permissions. */
-class HaluviUpdater(private val activity: Activity) {
+class HaluviUpdater(private val activity: Activity, private val safeToUpdate: () -> Boolean = { true }) {
     private val id=activity.packageName
     private val prefs=activity.getSharedPreferences("haluvi_updates",0)
     private var busy=false
     private var dialog:AlertDialog?=null
     private var pending:File?=null
     private var awaitingInstaller=false
+    private var pendingUpdate:Update?=null
+    private var waitingSettings=false
+    @Volatile private var cancelled=false
     private var lastCheck=0L
     private val base="https://raw.githubusercontent.com/hshareef77/haluvi-app-updates/main/distribution/apps/"
     private val downloadPrefix="https://github.com/hshareef77/haluvi-app-updates/releases/download/"
@@ -63,7 +66,7 @@ class HaluviUpdater(private val activity: Activity) {
         }finally{c.disconnect()}
     }
     fun check(manual:Boolean=false){
-        if(busy||dialog?.isShowing==true||activity.isFinishing)return
+        if(busy||dialog?.isShowing==true||activity.isFinishing||activity.isDestroyed||!safeToUpdate())return
         if(id.endsWith(".setup"))return
         if(!manual && prefs.getLong("required",0)<=installed() && android.os.SystemClock.elapsedRealtime()-lastCheck<60000 && lastCheck!=0L)return
         lastCheck=android.os.SystemClock.elapsedRealtime()
@@ -78,6 +81,7 @@ class HaluviUpdater(private val activity: Activity) {
                 busy=false
                 if(activity.isFinishing||activity.isDestroyed)return@runOnUiThread
                 dialog?.dismiss()
+                if(!safeToUpdate())return@runOnUiThread
                 if(result.isSuccess){
                     val u=result.getOrNull()
                     prefs.edit().putLong("required",if(u?.required==true)u.code else 0).apply()
@@ -113,9 +117,11 @@ class HaluviUpdater(private val activity: Activity) {
         return signatures?.map{it.toCharsString()}?.toSet().orEmpty()
     }
     private fun download(u:Update){
-        if(busy)return
+        if(busy||!safeToUpdate())return
         busy=true
+        cancelled=false
         val progress=AlertDialog.Builder(activity).setTitle("Downloading update").setMessage("Preparing download…").setCancelable(false).create()
+        if(!u.required)progress.setButton(AlertDialog.BUTTON_NEGATIVE,"Cancel") { _,_-> cancelled=true }
         dialog=progress;progress.show()
         Thread{
             val result=runCatching{
@@ -138,7 +144,7 @@ class HaluviUpdater(private val activity: Activity) {
                         var total=0L;var last=-10
                         c.inputStream.use{input->file.outputStream().use{out->
                             val buf=ByteArray(65536)
-                            while(true){val n=input.read(buf);if(n<0)break;total+=n;require(total<=u.size);out.write(buf,0,n);md.update(buf,0,n)
+                            while(true){require(!cancelled){"Download cancelled"};val n=input.read(buf);if(n<0)break;total+=n;require(total<=u.size);out.write(buf,0,n);md.update(buf,0,n)
                                 val percent=(total*100/u.size).toInt()
                                 if(percent>=last+10){last=percent;activity.runOnUiThread{progress.setMessage("Downloaded "+percent+" percent")}}
                             }
@@ -156,7 +162,8 @@ class HaluviUpdater(private val activity: Activity) {
             activity.runOnUiThread{
                 busy=false;progress.dismiss()
                 if(activity.isFinishing||activity.isDestroyed)return@runOnUiThread
-                result.onSuccess{pending=it;install(it)}.onFailure{
+                if(cancelled){result.getOrNull()?.delete();return@runOnUiThread}
+                result.onSuccess{pending=it;pendingUpdate=u;if(safeToUpdate())install(it)}.onFailure{
                     dialog=AlertDialog.Builder(activity).setTitle("Update failed").setMessage(it.message?:"Try again.")
                         .setCancelable(!u.required).setPositiveButton("Retry"){_,_->download(u)}
                         .setNegativeButton(if(u.required)"Exit" else "Later"){_,_->if(u.required)activity.finishAffinity()}.create()
@@ -166,10 +173,25 @@ class HaluviUpdater(private val activity: Activity) {
         }.start()
     }
     private fun install(file:File){
+        if(!safeToUpdate()||activity.isFinishing||activity.isDestroyed)return
+        val expected=pendingUpdate ?: return
+        if(busy)return
+        busy=true
+        Thread {
+            val approved=runCatching { val latest=manifest(); latest!=null && latest.code==expected.code && latest.hash==expected.hash && latest.url==expected.url }.getOrDefault(false)
+            activity.runOnUiThread {
+                busy=false
+                if(activity.isFinishing||activity.isDestroyed)return@runOnUiThread
+                if(!approved){file.delete();pending=null;pendingUpdate=null;check(true)}
+                else if(safeToUpdate())launchInstaller(file)
+            }
+        }.start()
+    }
+    private fun launchInstaller(file:File){
         if(Build.VERSION.SDK_INT>=26&&!activity.packageManager.canRequestPackageInstalls()){
             dialog=AlertDialog.Builder(activity).setTitle("Allow installation").setMessage("Allow this app to install updates, then return here.")
-                .setCancelable(false).setPositiveButton("Open settings"){_,_->activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+id)))}
-                .setNegativeButton("Exit"){_,_->activity.finishAffinity()}.create()
+                .setCancelable(false).setPositiveButton("Open settings"){_,_->waitingSettings=true;activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+id)))}
+                .setNegativeButton(if(pendingUpdate?.required==true)"Exit" else "Later"){_,_->if(pendingUpdate?.required==true)activity.finishAffinity()else{pending?.delete();pending=null;pendingUpdate=null}}.create()
             dialog?.show();return
         }
         try{
@@ -192,10 +214,12 @@ class HaluviUpdater(private val activity: Activity) {
         if(requestCode!=INSTALL_REQUEST)return
         awaitingInstaller=false
         if(activity.isFinishing||activity.isDestroyed)return
+        if(installed()>=(pendingUpdate?.code ?: Long.MAX_VALUE)){pending?.delete();pending=null;pendingUpdate=null;return}
         installationRetry()
     }
     fun resume(){
-        if(awaitingInstaller)return
+        if(awaitingInstaller||!safeToUpdate())return
+        if(waitingSettings){waitingSettings=false;dialog?.dismiss();dialog=null}
         val file=pending
         if(file!=null&&activity.packageManager.canRequestPackageInstalls()&&dialog?.isShowing!=true){install(file);return}
         if(file!=null&&dialog?.isShowing!=true){installationRetry();return}
