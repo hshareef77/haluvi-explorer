@@ -1,0 +1,121 @@
+name: Haluvi signed update candidate
+on:
+  push:
+    branches: [haluvi-updater-integration]
+    paths: ['.github/workflows/haluvi-signed-candidate.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: haluvi-explorer-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify_pull_request:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Run unit tests and build a debug APK
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Verify and restore permanent Android signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          EXPECTED_CERT_SHA256: 01342D0E68C396BD1232F58CDC17E23CF330B26688420FEF0D822F8D4925D478
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_PASSWORD" || -z "$KEY_ALIAS" ]]; then
+            echo "::error::Permanent Android signing secrets are missing from this repository. No APK or release was published."
+            exit 1
+          fi
+          expected=$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+          if [[ ! "$expected" =~ ^[0-9A-F]{64}$ ]]; then
+            echo "::error::Permanent Android signing certificate fingerprint is invalid."
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/android-signing/release.p12"
+          actual=$(keytool -exportcert -keystore "$RUNNER_TEMP/android-signing/release.p12" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | sha256sum | awk '{print toupper($1)}')
+          echo "Signing certificate SHA-256: $actual"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Signing certificate does not match the permanent Haluvi signing identity. Release blocked."
+            exit 1
+          fi
+          {
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/android-signing/release.p12"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          } >> "$GITHUB_ENV"
+          echo "Permanent signing certificate verified."
+      - name: Choose next release build number
+        id: release_number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '[.[] | select(.draft == false)] | length')
+          echo "build_number=$((count + 1))" >> "$GITHUB_OUTPUT"
+      - name: Run road-network tests and build the signed APK
+        env:
+          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
+        run: gradle --no-daemon -PappBuildNumber="$BUILD_NUMBER" :app:testDebugUnitTest :app:assembleRelease
+      - name: Verify APK signature and prepare release file
+        env:
+          BUILD_NUMBER: ${{ steps.release_number.outputs.build_number }}
+          EXPECTED_CERT_SHA256: 01342D0E68C396BD1232F58CDC17E23CF330B26688420FEF0D822F8D4925D478
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' ! -name '*unsigned*' -print -quit)
+          test -n "$apk" && test -s "$apk"
+          signer=$(command -v apksigner || find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          test -n "$signer"
+          "$signer" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-signature.txt"
+          expected=$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+          actual=$(sed -n 's/.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | head -n 1 | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+          echo "APK signing certificate SHA-256: $actual"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Built APK signature did not match the permanent key. Release blocked."
+            exit 1
+          fi
+          version=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          test -n "$version"
+          build="$BUILD_NUMBER"
+          cp "$apk" "Haluvi-Explorer-v${version}-build-${build}.apk"
+          echo "VERSION_NAME=$version" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$build" >> "$GITHUB_ENV"
+          echo "Verified signed APK: version $version, build $build."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haluvi-permanent-signed-candidate
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 5
