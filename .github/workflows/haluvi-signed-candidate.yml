@@ -5,7 +5,7 @@ on:
     paths: ['.github/workflows/haluvi-signed-candidate.yml']
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: haluvi-explorer-release-${{ github.ref }}
   cancel-in-progress: false
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -119,3 +119,22 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 5
+
+      - name: Publish verified installation release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/install-release"
+          signer=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          aapt="$(dirname "$signer")/aapt"
+          for apk in app/build/outputs/apk/release/*.apk; do
+            "$signer" verify --print-certs "$apk"
+            "$aapt" dump badging "$apk" > "$RUNNER_TEMP/apk-version.txt"
+            head -1 "$RUNNER_TEMP/apk-version.txt"
+            cp "$apk" "$RUNNER_TEMP/install-release/haluvi-explorer-$(basename "$apk")"
+          done
+          tag="haluvi-update-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$tag" "$RUNNER_TEMP/install-release/"*.apk --target "$GITHUB_SHA" --title "haluvi-explorer signed updater-integrated release" --notes "Permanently signed APK from the updater integration branch. Central update distribution remains separately controlled. On-device installation compatibility requires verification." --prerelease
+          gh release view "$tag" --json url,assets
